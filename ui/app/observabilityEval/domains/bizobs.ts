@@ -22,19 +22,19 @@ export async function runBizObsDomain(): Promise<ObsDomainResult> {
   const pipelineRules = settingsResult.get("builtin:bizevents-processing.rule") ?? 0;
   const httpRules = settingsResult.get("builtin:bizevents.http.incoming") ?? 0;
 
-  // P1: Business events flowing
-  const p1Score = bizTotal >= 10000 ? 100 : bizTotal >= 1000 ? 80 : bizTotal >= 1 ? 60 : 50;
+  // P1: Business events flowing — 0 events is a genuine gap for APM-covered tenants (not N/A)
+  const p1Score = bizTotal >= 10000 ? 100 : bizTotal >= 1000 ? 80 : bizTotal >= 1 ? 60 : 0;
   const p1 = mkProbe(
     "biz.volume", "Business event ingestion", 0.40, p1Score,
     bizTotal === 0
-      ? "No business events detected (may not apply to this tenant)"
+      ? "No business events detected"
       : `${bizTotal.toLocaleString()} business events in last 30 days`,
     "> 0 business events flowing",
     bizTotal === 0 ? mkFinding(
       "biz.volume", "No Business Events Ingested",
-      "No business events found in Grail. Business observability (conversion tracking, revenue monitoring) is not active.",
+      "No business events found in Grail. Business observability (conversion rates, revenue impact, customer journey tracking) is not active.",
       "info",
-      "Integrate key business processes by sending business events via the Business Events API or OpenPipeline HTTP sources.",
+      "Integrate key business processes by sending business events via the Business Events API or OpenPipeline HTTP sources. Start with the highest-value transactions: orders, payments, and registrations.",
       "0 business events in 30 days"
     ) : undefined
   );

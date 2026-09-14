@@ -31,9 +31,11 @@ export interface FullEvalHandle {
 }
 
 const SEVERITY_ORDER: Record<FindingSeverity, number> = { critical: 0, warning: 1, info: 2, success: 3 };
+// Davis is the core DT AI differentiator — weighted highest. OneAgent/APM are the foundation.
+// Automation/BizObs remain lower as adoption is still maturing across most enterprises.
 const DOMAIN_WEIGHTS: Record<string, number> = {
   oneagent: 1.0, infra: 0.9, apm: 1.0, logs: 0.9, dem: 0.8,
-  davis: 1.0, automation: 0.7, governance: 0.9, bizobs: 0.7, extensions: 0.8,
+  davis: 1.2, automation: 0.7, governance: 0.9, bizobs: 0.7, extensions: 0.8,
 };
 
 async function quickCount(query: string): Promise<number> {
@@ -120,7 +122,7 @@ export function useObservabilityFullEval(): FullEvalHandle {
     ]).then(([pgiCount, serviceCount, spansPerHour, logsPerHour]) => {
       if (cancelledRef.current) return;
       const estimatedGb = ((spansPerHour * 24 * 2048) + (logsPerHour * 24 * 512)) / (1024 * 1024 * 1024);
-      setEstimate({ pgiCount, serviceCount, spansPerHour, logsPerHour, estimatedGb, estimatedDps: estimatedGb * 0.01 });
+      setEstimate({ pgiCount, serviceCount, spansPerHour, logsPerHour, estimatedGb });
       setPhase("confirmed");
     }).catch((err: unknown) => {
       if (cancelledRef.current) return;

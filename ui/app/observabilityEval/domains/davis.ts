@@ -11,6 +11,7 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
     getSettingsObjectCounts([
       "builtin:davis.anomaly-detectors",
       "builtin:alerting.maintenance-window",
+      "builtin:problem.notifications",
     ]),
     getSettingsEnabledCounts([
       "builtin:alerting.profile",
@@ -22,6 +23,7 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
   const sloCount = toNum(sloR.records[0]?.["count()"]);
   const davisDetectors = settingsCounts.get("builtin:davis.anomaly-detectors") ?? 0;
   const maintenanceWindows = settingsCounts.get("builtin:alerting.maintenance-window") ?? 0;
+  const notificationIntegrations = settingsCounts.get("builtin:problem.notifications") ?? 0;
   const alertingProfiles = settingsEnabled.get("builtin:alerting.profile");
   const enabledAlertingProfiles = alertingProfiles?.enabled ?? 0;
 
@@ -65,10 +67,10 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
     "Fewer active problems indicates healthy environment"
   );
 
-  // P4: Alerting profiles (Gen3)
+  // P4: Alerting profiles (Gen3) — routes Davis problems to the right teams
   const p4Score = enabledAlertingProfiles >= 3 ? 100 : enabledAlertingProfiles >= 1 ? 70 : 0;
   const p4 = mkProbe(
-    "davis.alerting", "Alerting profiles configured", 0.20, p4Score,
+    "davis.alerting", "Alerting profiles configured", 0.18, p4Score,
     `${enabledAlertingProfiles} enabled alerting profile${enabledAlertingProfiles !== 1 ? "s" : ""}`,
     "≥ 3 alerting profiles configured",
     enabledAlertingProfiles === 0 ? mkFinding(
@@ -85,10 +87,10 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P5: SLOs defined
+  // P5: SLOs defined — reliability contracts backed by Davis
   const p5Score = sloCount >= 10 ? 100 : sloCount >= 5 ? 80 : sloCount >= 1 ? 60 : 0;
   const p5 = mkProbe(
-    "davis.slos", "Service Level Objectives defined", 0.15, p5Score,
+    "davis.slos", "Service Level Objectives defined", 0.14, p5Score,
     `${sloCount} SLO${sloCount !== 1 ? "s" : ""} defined`,
     "≥ 10 SLOs defined for critical services",
     sloCount === 0 ? mkFinding(
@@ -105,19 +107,40 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P6: Maintenance windows
-  const p6Score = (maintenanceWindows ?? 0) >= 1 ? 100 : 50;
+  // P6: Maintenance windows — absence causes false-positive Davis problems during planned maintenance
+  const p6Score = (maintenanceWindows ?? 0) >= 1 ? 100 : 0;
   const p6 = mkProbe(
-    "davis.maintenance", "Maintenance windows configured", 0.15, p6Score,
+    "davis.maintenance", "Maintenance windows configured", 0.10, p6Score,
     `${maintenanceWindows ?? 0} maintenance window${maintenanceWindows !== 1 ? "s" : ""} configured`,
     "≥ 1 maintenance window defined",
     (maintenanceWindows ?? 0) === 0 ? mkFinding(
       "davis.maintenance", "No Maintenance Windows Configured",
-      "No maintenance windows are defined. Planned maintenance activities will trigger false-positive Davis problems.",
-      "info",
-      "Create maintenance window schedules to suppress alerting during planned outages and deployments."
+      "No maintenance windows are defined. Deployments and planned downtime will generate false-positive Davis problems and alert on-call unnecessarily.",
+      "warning",
+      "Create maintenance window schedules to suppress Davis alerting during planned outages and deployment windows.",
+      "0 maintenance window schedules"
     ) : undefined
   );
 
-  return buildDomain("davis", "Davis AI & Alerting", "△", [p1, p2, p3, p4, p5, p6]);
+  // P7: Notification integrations — Davis problems must reach humans to be actionable
+  const p7Score = (notificationIntegrations ?? 0) >= 2 ? 100 : (notificationIntegrations ?? 0) === 1 ? 70 : 0;
+  const p7 = mkProbe(
+    "davis.notifications", "Notification integrations configured", 0.13, p7Score,
+    `${notificationIntegrations ?? 0} problem notification integration${notificationIntegrations !== 1 ? "s" : ""} configured`,
+    "≥ 2 notification integrations (primary + backup channel)",
+    (notificationIntegrations ?? 0) === 0 ? mkFinding(
+      "davis.notifications", "No Notification Integrations Configured",
+      "No problem notification integrations are defined. Davis problems will not reach on-call engineers unless they are actively watching the console.",
+      "critical",
+      "Configure at least one notification integration (email, Slack, PagerDuty, or webhook) to ensure Davis problems reach the right teams immediately.",
+      "0 notification integrations"
+    ) : (notificationIntegrations ?? 0) === 1 ? mkFinding(
+      "davis.notifications", "Single Notification Channel — No Redundancy",
+      "Only one notification integration is configured. If the primary channel fails, Davis problems will go unnoticed.",
+      "info",
+      "Add a secondary notification channel (e.g., Slack + PagerDuty) for critical problem escalation redundancy."
+    ) : undefined
+  );
+
+  return buildDomain("davis", "Davis AI & Alerting", "△", [p1, p2, p3, p4, p5, p6, p7]);
 }

@@ -17,6 +17,15 @@ interface GapRule {
 }
 
 // ── 20 cross-domain correlation rules ─────────────────────────────────────────
+//
+// Threshold conventions:
+//   strongThreshold: 75 — used for core platform capabilities (OneAgent, APM, Davis, Logs, Infra)
+//                         where a score ≥75 means meaningful adoption, not just presence
+//   strongThreshold: 70 — used for optional/emerging capabilities (Extensions, Automation, BizObs,
+//                         DEM partial) where even moderate adoption creates an actionable gap
+//   weakThreshold: 50 — default (anything below 50 = D or F = genuine gap)
+//   weakThreshold: 60 — only for gap-governance-oneagent where Governance being strong sets an
+//                         explicit expectation of actual coverage (governance without agents = hollow)
 
 const GAP_RULES: GapRule[] = [
   {

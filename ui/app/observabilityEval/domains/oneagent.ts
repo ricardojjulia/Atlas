@@ -22,7 +22,8 @@ export async function runOneAgentDomain(): Promise<ObsDomainResult> {
     modeR.records.find(r => toStr(r["monitoringMode"]) === "FULL_STACK")?.["hostCount"]
   );
   const fsPct = totalHosts > 0 ? Math.round((fullStackCount / totalHosts) * 100) : 0;
-  const p1Score = totalHosts === 0 ? 50 : fsPct >= 80 ? 100 : fsPct >= 50 ? fsPct : Math.round(fsPct * 0.5);
+  // Clamp partial scores to min 51 so real partial coverage never collides with the 50="unknown" sentinel
+  const p1Score = totalHosts === 0 ? 50 : fsPct >= 80 ? 100 : fsPct >= 50 ? Math.max(51, fsPct) : Math.round(fsPct * 0.5);
   const p1 = mkProbe(
     "oa.fullstack", "Full-stack mode coverage", 0.30, p1Score,
     `${fullStackCount} of ${totalHosts} hosts in FULL_STACK mode (${fsPct}%)`,
@@ -55,7 +56,7 @@ export async function runOneAgentDomain(): Promise<ObsDomainResult> {
   // P3: Host group assignment
   const hostsNoGroup = toNum(noGroupR.records[0]?.["count()"]);
   const assignedPct = totalHosts > 0 ? Math.round(((totalHosts - hostsNoGroup) / totalHosts) * 100) : 0;
-  const p3Score = totalHosts === 0 ? 50 : assignedPct >= 80 ? 100 : assignedPct >= 50 ? assignedPct : Math.round(assignedPct * 0.5);
+  const p3Score = totalHosts === 0 ? 50 : assignedPct >= 80 ? 100 : assignedPct >= 50 ? Math.max(51, assignedPct) : Math.round(assignedPct * 0.5);
   const p3 = mkProbe(
     "oa.hostgroups", "Host group assignment", 0.20, p3Score,
     `${hostsNoGroup} of ${totalHosts} hosts without a host group`,

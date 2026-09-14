@@ -7,7 +7,7 @@ export async function runLogsDomain(segFilter: string): Promise<ObsDomainResult>
   const sf = segFilter ? `| filter filterSegments("${segFilter}")` : "";
 
   const [logVolR, debugR, bucketR, settingsResult] = await Promise.all([
-    runDql(`fetch logs, from:now()-24h\n${sf}\n| summarize total = count(), errors = countIf(loglevel == "ERROR" or loglevel == "SEVERE"), warnings = countIf(loglevel == "WARN" or loglevel == "WARNING"), debug = countIf(loglevel == "DEBUG" or loglevel == "TRACE")`),
+    runDql(`fetch logs, from:now()-24h\n${sf}\n| summarize total = count(), errors = countIf(loglevel == "ERROR" or loglevel == "SEVERE"), warnings = countIf(loglevel == "WARN" or loglevel == "WARNING"), debug = countIf(loglevel == "DEBUG" or loglevel == "TRACE"), structured = countIf(isNotNull(loglevel) and loglevel != "NONE" and loglevel != "")`),
     runDql(`fetch logs, from:now()-24h\n${sf}\n| summarize total = count(), debugCount = countIf(loglevel == "DEBUG" OR loglevel == "TRACE")`),
     runDql("fetch dt.system.buckets | fieldsKeep name, records, retention_days, estimated_uncompressed_bytes"),
     // Try both the new OpenPipeline schema and the legacy LMA processing rule schema
@@ -16,6 +16,7 @@ export async function runLogsDomain(segFilter: string): Promise<ObsDomainResult>
 
   const totalLogs = toNum(logVolR.records[0]?.["total"]);
   const errorLogs = toNum(logVolR.records[0]?.["errors"]);
+  const structuredLogs = toNum(logVolR.records[0]?.["structured"]);
   const debugLogs = toNum(debugR.records[0]?.["debugCount"]);
   const debugTotal = toNum(debugR.records[0]?.["total"]);
   // Combine both schemas: new OpenPipeline config OR legacy LMA processing rules both indicate log processing is active
@@ -37,19 +38,21 @@ export async function runLogsDomain(segFilter: string): Promise<ObsDomainResult>
     ) : undefined
   );
 
-  // P2: Log signal quality (error/warn ratio)
-  const errorPct = totalLogs > 0 ? (errorLogs / totalLogs) * 100 : 0;
-  const p2Score = totalLogs === 0 ? 50 : errorPct <= 5 ? 100 : errorPct <= 15 ? Math.round(100 - (errorPct - 5) * 5) : 30;
+  // P2: Structured logging coverage — measures log quality (% with loglevel set), not application health
+  // Error rate is shown in evidence but does NOT drive the score — apps with many errors should have good logs, not be penalized twice
+  const structuredPct = totalLogs > 0 ? Math.round((structuredLogs / totalLogs) * 100) : 0;
+  const errorPct = totalLogs > 0 ? ((errorLogs / totalLogs) * 100) : 0;
+  const p2Score = totalLogs === 0 ? 50 : structuredPct >= 90 ? 100 : structuredPct >= 70 ? 80 : structuredPct >= 50 ? 60 : 30;
   const p2 = mkProbe(
-    "logs.quality", "Log signal quality", 0.20, p2Score,
-    totalLogs === 0 ? "No log data to evaluate" : `${errorPct.toFixed(1)}% error-level logs (${errorLogs.toLocaleString()} of ${totalLogs.toLocaleString()})`,
-    "< 5% error-level log volume",
-    errorPct > 15 && totalLogs > 0 ? mkFinding(
-      "logs.quality", "High Error Log Rate",
-      `${errorPct.toFixed(1)}% of log volume is at ERROR or SEVERE level — this may indicate application instability or misconfigured log levels.`,
+    "logs.quality", "Structured logging coverage", 0.20, p2Score,
+    totalLogs === 0 ? "No log data to evaluate" : `${structuredPct}% of logs have loglevel set — ${errorPct.toFixed(1)}% are ERROR/SEVERE`,
+    "≥ 90% of logs have loglevel attribute",
+    structuredPct < 70 && totalLogs > 0 ? mkFinding(
+      "logs.quality", "Low Structured Log Coverage",
+      `Only ${structuredPct}% of ingested logs have a loglevel attribute. Unstructured logs reduce DQL filter accuracy and log analysis quality.`,
       "warning",
-      "Review services with high error log volumes. Configure log processing rules to filter noise from error-classified events.",
-      `Error logs: ${errorLogs.toLocaleString()} of ${totalLogs.toLocaleString()} total`
+      "Configure log sources to emit structured JSON with loglevel. Use OpenPipeline to extract and normalize loglevel from unstructured log text.",
+      `Structured: ${structuredLogs.toLocaleString()} of ${totalLogs.toLocaleString()} (${structuredPct}%)`
     ) : undefined
   );
 

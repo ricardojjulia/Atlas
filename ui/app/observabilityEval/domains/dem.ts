@@ -33,12 +33,20 @@ export async function runDemDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P2: RUM user event volume
-  const p2Score = rumVolume >= 10000 ? 100 : rumVolume >= 1000 ? 80 : rumVolume >= 1 ? 60 : appCount > 0 ? 0 : 50;
+  // P2: RUM user event volume — scored per app to avoid rewarding near-dead single-app deployments
+  const eventsPerApp = appCount > 0 ? Math.round(rumVolume / appCount) : 0;
+  const p2Score = rumVolume === 0 && appCount > 0 ? 0
+    : rumVolume === 0 ? 50
+    : eventsPerApp >= 100000 ? 100   // 100k events/app/30d — active real users
+    : eventsPerApp >= 10000 ? 80     // 10k events/app/30d — moderate traffic
+    : eventsPerApp >= 1000 ? 60      // 1k events/app/30d — minimal
+    : 40;                            // < 1k — very low (test/staging-like)
   const p2 = mkProbe(
     "dem.rumvolume", "RUM user event volume", 0.25, p2Score,
-    `${rumVolume.toLocaleString()} user events ingested in last 30 days`,
-    "≥ 1,000 user events in 30 days",
+    appCount > 0
+      ? `${rumVolume.toLocaleString()} user events in 30 days (~${eventsPerApp.toLocaleString()} per app)`
+      : `${rumVolume.toLocaleString()} user events ingested in last 30 days`,
+    "≥ 10,000 events per monitored app in 30 days",
     rumVolume === 0 && appCount > 0 ? mkFinding(
       "dem.rumvolume", "No RUM User Events Detected",
       "Web applications are configured but no user events are flowing into Grail.",
@@ -48,15 +56,22 @@ export async function runDemDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P3: Session replay configured
-  const p3Score = (sessionReplayCount ?? 0) >= 1 ? 100 : appCount > 0 ? 40 : 50;
+  // P3: Session replay configured — proportional to app count (1 config for 20 apps is not good coverage)
+  const srCovPct = appCount > 0 ? Math.round(((sessionReplayCount ?? 0) / appCount) * 100) : 0;
+  const p3Score = appCount === 0 && (sessionReplayCount ?? 0) === 0 ? 50
+    : (sessionReplayCount ?? 0) === 0 ? 40
+    : (sessionReplayCount ?? 0) >= appCount ? 100   // all apps covered
+    : srCovPct >= 50 ? 80                           // majority covered
+    : 60;                                           // some coverage
   const p3 = mkProbe(
     "dem.sessionreplay", "Session replay configured", 0.15, p3Score,
-    `${sessionReplayCount ?? 0} session replay privacy preference${sessionReplayCount !== 1 ? "s" : ""} configured`,
-    "≥ 1 session replay configuration",
+    appCount > 0
+      ? `${sessionReplayCount ?? 0} of ${appCount} app${appCount !== 1 ? "s" : ""} with session replay (${srCovPct}%)`
+      : `${sessionReplayCount ?? 0} session replay privacy preference${sessionReplayCount !== 1 ? "s" : ""} configured`,
+    "Session replay configured for all monitored apps",
     (sessionReplayCount ?? 0) === 0 && appCount > 0 ? mkFinding(
       "dem.sessionreplay", "Session Replay Not Configured",
-      "Web applications exist but session replay privacy preferences are not configured.",
+      "Web applications exist but no session replay privacy preferences are configured.",
       "info",
       "Configure session replay to enable user session playback for UX troubleshooting and journey analysis."
     ) : undefined

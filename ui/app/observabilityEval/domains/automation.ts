@@ -17,7 +17,7 @@ export async function runAutomationDomain(): Promise<ObsDomainResult> {
   // P1: Workflow definitions exist and are active
   const p1Score = totalWorkflows >= 10 ? 100 : totalWorkflows >= 3 ? 80 : totalWorkflows >= 1 ? 60 : 0;
   const p1 = mkProbe(
-    "auto.workflows", "AutomationEngine workflows defined", 0.40, p1Score,
+    "auto.workflows", "AutomationEngine workflows defined", 0.35, p1Score,
     totalWorkflows === 0
       ? "No AutomationEngine workflows found"
       : `${totalWorkflows} workflow${totalWorkflows !== 1 ? "s" : ""} defined (${activeWorkflows} enabled)`,
@@ -34,7 +34,7 @@ export async function runAutomationDomain(): Promise<ObsDomainResult> {
   // P2: Workflow enablement health (active vs total)
   const p2Score = totalWorkflows === 0 ? 50 : enabledPct >= 80 ? 100 : enabledPct >= 50 ? enabledPct : Math.round(enabledPct * 0.6);
   const p2 = mkProbe(
-    "auto.health", "Workflow enablement ratio", 0.40, p2Score,
+    "auto.health", "Workflow enablement ratio", 0.35, p2Score,
     totalWorkflows === 0
       ? "No workflow data to evaluate"
       : `${activeWorkflows} of ${totalWorkflows} workflows enabled (${enabledPct}%)`,
@@ -51,7 +51,7 @@ export async function runAutomationDomain(): Promise<ObsDomainResult> {
   // P3: Deployment event tracking
   const p3Score = deployEvents >= 10 ? 100 : deployEvents >= 1 ? 70 : 0;
   const p3 = mkProbe(
-    "auto.deploys", "Deployment event tracking", 0.20, p3Score,
+    "auto.deploys", "Deployment event tracking", 0.30, p3Score,
     `${deployEvents.toLocaleString()} custom deployment event${deployEvents !== 1 ? "s" : ""} in last 30 days`,
     "≥ 1 deployment event tracked (release tracking active)",
     deployEvents === 0 ? mkFinding(

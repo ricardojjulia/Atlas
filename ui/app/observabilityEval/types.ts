@@ -16,7 +16,6 @@ export interface EstimateResult {
   spansPerHour: number;
   logsPerHour: number;
   estimatedGb: number;
-  estimatedDps: number;
 }
 
 export interface ObsProbeResult {

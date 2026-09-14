@@ -35,7 +35,6 @@ const DOMAIN_CATALOG: Array<{ id: string; name: string; icon: string }> = [
 
 function formatNum(n: number): string { return n.toLocaleString(); }
 function formatGb(gb: number): string { return gb < 0.001 ? "< 0.001 GB" : `${gb.toFixed(3)} GB`; }
-function formatDps(dps: number): string { return dps < 0.01 ? "< $0.01" : `$${dps.toFixed(2)}`; }
 
 // ─── Grade helpers ─────────────────────────────────────────────────────────────
 
@@ -86,7 +85,7 @@ const EstimateCard: React.FC<EstimateCardProps> = ({ estimate, dk, onConfirm, on
     { label: "Spans/hour (last 1h)", value: formatNum(estimate.spansPerHour) },
     { label: "Log events/hour (last 1h)", value: formatNum(estimate.logsPerHour) },
     { label: "Estimated 24h scan volume", value: formatGb(estimate.estimatedGb) },
-    { label: "Estimated DPS cost", value: formatDps(estimate.estimatedDps) },
+    { label: "Probes to run", value: "~46 DQL/API queries across 10 domains" },
   ];
   const bullets = [
     "OneAgent deployment coverage — full-stack mode, version spread, host groups, network zones",

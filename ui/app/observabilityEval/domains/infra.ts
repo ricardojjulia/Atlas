@@ -11,7 +11,8 @@ export async function runInfraDomain(segFilter: string): Promise<ObsDomainResult
     // 7d window avoids false ghost readings from batch/weekly workloads with irregular traffic
     runDql(`fetch spans, from:now()-7d\n${sf}\n| filter isNotNull(dt.entity.service)\n| summarize active = countDistinct(dt.entity.service)`),
     runDql("fetch dt.entity.service | summarize count()"),
-    runDql("fetch dt.entity.process_group_instance | filter toTimestamp(lastSeenTms) < now() - 7d | summarize count()"),
+    // lastSeenTms field availability varies by DT version — if null/unavailable, filter silently returns 0 (no stale PGIs detected)
+    runDql("fetch dt.entity.process_group_instance | filter isNotNull(lastSeenTms) and toTimestamp(lastSeenTms) < now() - 7d | summarize count()"),
     runDql("fetch dt.entity.kubernetes_cluster | summarize count()"),
   ]);
 

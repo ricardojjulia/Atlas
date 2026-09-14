@@ -5,7 +5,7 @@ import type { ObsDomainResult } from "../types";
 export async function runApmDomain(segFilter: string): Promise<ObsDomainResult> {
   const sf = segFilter ? `| filter filterSegments("${segFilter}")` : "";
 
-  const [spanSvcR, spanQualityR, cloudFuncR, azureFuncR, faasSvcR, svcMethodR, topSvcR] = await Promise.all([
+  const [spanSvcR, spanQualityR, cloudFuncR, azureFuncR, faasSvcR, svcMethodR, topSvcR, totalSvcR] = await Promise.all([
     runDql(`fetch spans, from:now()-24h\n${sf}\n| filter isNotNull(dt.entity.service)\n| summarize active = countDistinct(dt.entity.service)`),
     runDql(`fetch spans, from:now()-30d\n${sf}\n| summarize total = count(), withDbStatement = countIf(isNotNull(db.statement)), withServiceName = countIf(isNotNull(service.name))`),
     // Filter to recently-seen functions to match the 7d span window below
@@ -14,20 +14,36 @@ export async function runApmDomain(segFilter: string): Promise<ObsDomainResult> 
     runDql(`fetch spans, from:now()-7d\n${sf}\n| filter isNotNull(faas.name) or isNotNull(faas.id)\n| summarize instrumented = countDistinct(coalesce(faas.name, faas.id))`),
     runDql("fetch dt.entity.service_method | summarize count()"),
     runDql(`fetch spans, from:now()-24h\n${sf}\n| fieldsAdd svc = coalesce(dt.entity.service, service.name)\n| filter isNotNull(svc)\n| summarize total = count(), errors = countIf(otel.status_code == "ERROR" or error == true or isNotNull(exception.type)), by:{svc}\n| fieldsAdd errorRate = round(toDouble(errors) / toDouble(total) * 100.0, 1)\n| sort total desc\n| limit 20`),
+    runDql("fetch dt.entity.service | summarize count()"),
   ]);
 
-  // P1: Services with active tracing
+  // P1: Distributed tracing coverage — ratio of services with active traces vs total detected services
   const activeSvcsWithTraces = toNum(spanSvcR.records[0]?.["active"]);
-  const p1Score = activeSvcsWithTraces >= 1 ? 100 : 0;
+  const totalSvcs = toNum(totalSvcR.records[0]?.["count()"]);
+  const tracingCovPct = totalSvcs > 0 ? Math.round((activeSvcsWithTraces / totalSvcs) * 100) : 0;
+  const p1Score = totalSvcs === 0 ? 50
+    : activeSvcsWithTraces === 0 ? 0
+    : tracingCovPct >= 80 ? 100
+    : tracingCovPct >= 50 ? 80
+    : tracingCovPct >= 25 ? 60
+    : 40;
   const p1 = mkProbe(
-    "apm.tracing", "Services with active tracing", 0.20, p1Score,
-    `${activeSvcsWithTraces} service${activeSvcsWithTraces !== 1 ? "s" : ""} with distributed trace data in last 24h`,
-    "≥ 1 service with active tracing",
+    "apm.tracing", "Distributed tracing coverage", 0.20, p1Score,
+    totalSvcs === 0
+      ? `${activeSvcsWithTraces} service${activeSvcsWithTraces !== 1 ? "s" : ""} with trace data (no service entities detected)`
+      : `${activeSvcsWithTraces} of ${totalSvcs} services with distributed traces in last 24h (${tracingCovPct}%)`,
+    "≥ 80% of services with active tracing",
     activeSvcsWithTraces === 0 ? mkFinding(
       "apm.tracing", "No Distributed Tracing Data",
       "No services have distributed trace data in the last 24 hours.",
       "critical",
       "Enable distributed tracing via OneAgent code sensors or OpenTelemetry SDK instrumentation."
+    ) : tracingCovPct < 50 && totalSvcs > 0 ? mkFinding(
+      "apm.tracing", "Low Distributed Tracing Coverage",
+      `Only ${tracingCovPct}% of detected services (${activeSvcsWithTraces} of ${totalSvcs}) have distributed trace data.`,
+      "warning",
+      "Enable OneAgent full-stack mode or add OTel instrumentation to untraced services. Review service detection rules.",
+      `Traced: ${activeSvcsWithTraces} | Total services: ${totalSvcs}`
     ) : undefined
   );
 
