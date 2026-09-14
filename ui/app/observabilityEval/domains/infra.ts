@@ -8,7 +8,8 @@ export async function runInfraDomain(segFilter: string): Promise<ObsDomainResult
   const [hostR, svcR, activeSpanSvcR, totalSvcR, stalePgiR, k8sR] = await Promise.all([
     runDql("fetch dt.entity.host | summarize count()"),
     runDql("fetch dt.entity.service | summarize count()"),
-    runDql(`fetch spans, from:now()-24h\n${sf}\n| filter isNotNull(dt.entity.service)\n| summarize active = countDistinct(dt.entity.service)`),
+    // 7d window avoids false ghost readings from batch/weekly workloads with irregular traffic
+    runDql(`fetch spans, from:now()-7d\n${sf}\n| filter isNotNull(dt.entity.service)\n| summarize active = countDistinct(dt.entity.service)`),
     runDql("fetch dt.entity.service | summarize count()"),
     runDql("fetch dt.entity.process_group_instance | filter toTimestamp(lastSeenTms) < now() - 7d | summarize count()"),
     runDql("fetch dt.entity.kubernetes_cluster | summarize count()"),
@@ -52,11 +53,11 @@ export async function runInfraDomain(segFilter: string): Promise<ObsDomainResult
   const p3Score = totalSvcs === 0 ? 50 : activePct >= 75 ? 100 : activePct >= 50 ? activePct : Math.round(activePct * 0.6);
   const p3 = mkProbe(
     "infra.activesvcs", "Active service rate", 0.25, p3Score,
-    `${activeSvcs} of ${totalSvcs} services with live traffic in last 24h (${activePct}%)`,
+    `${activeSvcs} of ${totalSvcs} services with live traffic in last 7 days (${activePct}%)`,
     "≥ 75% of services actively receiving traffic",
     ghostCount > totalSvcs * 0.25 ? mkFinding(
       "infra.ghostsvcs", "High Ghost Service Ratio",
-      `${ghostCount} service${ghostCount !== 1 ? "s" : ""} (${100 - activePct}%) exist in topology but sent no request data in 24h.`,
+      `${ghostCount} service${ghostCount !== 1 ? "s" : ""} (${100 - activePct}%) exist in topology but sent no request data in the last 7 days.`,
       ghostCount > totalSvcs * 0.5 ? "warning" : "info",
       "Review ghost services — decommissioned services should be removed to keep topology clean.",
       `Ghost services: ${ghostCount} | Active: ${activeSvcs}`

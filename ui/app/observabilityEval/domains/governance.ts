@@ -6,17 +6,19 @@ import type { ObsDomainResult } from "../types";
 
 export async function runGovernanceDomain(): Promise<ObsDomainResult> {
   const [auditR, settingsResult, tokenSummary] = await Promise.all([
-    runDql("fetch dt.system.events, from:now()-7d | filter event.kind == \"AUDIT_EVENT\" | summarize total = count(), uniqueUsers = countDistinct(user)"),
+    // Grail stores audit events in the audit.logs table; user field is user.id in the audit log schema
+    runDql("fetch audit.logs, from:now()-7d | summarize total = count(), uniqueUsers = countDistinct(user.id)"),
     getSettingsObjectCounts([
       "builtin:management-zones",
       "builtin:ownership.teams",
+      // builtin:segment — platform segments schema; may vary across DT versions
       "builtin:segment",
     ]),
     getTokenSummary(),
   ]);
 
   const auditTotal = toNum(auditR.records[0]?.["total"]);
-  const auditUsers = toNum(auditR.records[0]?.["uniqueUsers"]);
+  const auditUsers = toNum(auditR.records[0]?.["uniqueUsers"] ?? auditR.records[0]?.["uniqueusers"] ?? 0);
   const mgmtZones = settingsResult.get("builtin:management-zones") ?? 0;
   const ownershipTeams = settingsResult.get("builtin:ownership.teams") ?? 0;
   const segments = settingsResult.get("builtin:segment") ?? 0;

@@ -4,16 +4,17 @@ import { mkProbe, mkFinding, buildDomain } from "../domainUtils";
 import type { ObsDomainResult } from "../types";
 
 export async function runExtensionsDomain(): Promise<ObsDomainResult> {
-  const [agCountR, awsR, azureVmR, extensionCount] = await Promise.all([
-    runDql("timeseries avg(dt.sfm.active_gate.system.cpu_usage), by:{dt.active_gate.id} | summarize agCount = count()"),
+  const [agCountR, awsR, azureSubR, extensionCount] = await Promise.all([
+    runDql("fetch dt.entity.active_gate | summarize agCount = count()"),
     runDql("fetch dt.entity.aws_credentials | summarize count()"),
-    runDql("fetch dt.entity.azure_vm | summarize count()"),
+    // azure_subscription entities are created by the ActiveGate Azure cloud integration — more reliable than VM count
+    runDql("fetch dt.entity.azure_subscription | summarize count()"),
     getExtensionCount(),
   ]);
 
   const agCount = toNum(agCountR.records[0]?.["agCount"]);
   const awsIntegrations = toNum(awsR.records[0]?.["count()"]);
-  const azureVms = toNum(azureVmR.records[0]?.["count()"]);
+  const azureSubs = toNum(azureSubR.records[0]?.["count()"]);
   const extCount = extensionCount ?? 0;
 
   // P1: ActiveGate high availability
@@ -51,16 +52,16 @@ export async function runExtensionsDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P3: Cloud integrations
+  // P3: Cloud integrations (using azure_subscription — created only by AG Azure integration)
   const hasAws = awsIntegrations >= 1;
-  const hasAzure = azureVms >= 1;
+  const hasAzure = azureSubs >= 1;
   const cloudIntegrations = (hasAws ? 1 : 0) + (hasAzure ? 1 : 0);
   const p3Score = cloudIntegrations >= 2 ? 100 : cloudIntegrations === 1 ? 70 : 50;
   const p3 = mkProbe(
     "ext.cloud", "Cloud integrations present", 0.30, p3Score,
     [
       hasAws ? `AWS: ${awsIntegrations} credential${awsIntegrations !== 1 ? "s" : ""}` : "AWS: none",
-      hasAzure ? `Azure VMs: ${azureVms}` : "Azure: none",
+      hasAzure ? `Azure: ${azureSubs} subscription${azureSubs !== 1 ? "s" : ""} (via cloud integration)` : "Azure: none",
     ].join(" | "),
     "Cloud integration configured (if applicable)"
   );

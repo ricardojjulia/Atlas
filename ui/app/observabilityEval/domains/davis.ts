@@ -25,23 +25,20 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
   const alertingProfiles = settingsEnabled.get("builtin:alerting.profile");
   const enabledAlertingProfiles = alertingProfiles?.enabled ?? 0;
 
-  // P1: Davis anomaly detectors configured
-  const p1Score = (davisDetectors ?? 0) >= 5 ? 100 : (davisDetectors ?? 0) >= 2 ? 70 : (davisDetectors ?? 0) === 1 ? 50 : 0;
+  // P1: Custom anomaly detector rules (supplements built-in Davis AI baselines — 0 custom rules is normal and valid)
+  // Note: builtin:davis.anomaly-detectors counts user-defined custom threshold rules, NOT built-in Davis AI detection.
+  // A tenant with 0 custom detectors may still have fully functional built-in Davis AI (evidenced by P2 events).
+  const p1Score = (davisDetectors ?? 0) >= 5 ? 100 : (davisDetectors ?? 0) >= 2 ? 80 : (davisDetectors ?? 0) === 1 ? 70 : 50;
   const p1 = mkProbe(
-    "davis.detectors", "Davis Anomaly Detectors", 0.20, p1Score,
-    `${davisDetectors ?? 0} Davis Anomaly Detector configuration${davisDetectors !== 1 ? "s" : ""}`,
-    "≥ 5 Davis Anomaly Detectors configured",
+    "davis.detectors", "Custom anomaly detector rules", 0.20, p1Score,
+    `${davisDetectors ?? 0} custom anomaly detector rule${davisDetectors !== 1 ? "s" : ""} configured (built-in Davis AI baselines are always active)`,
+    "≥ 2 custom anomaly detector rules for fine-tuned alerting",
     (davisDetectors ?? 0) === 0 ? mkFinding(
-      "davis.detectors", "No Davis Anomaly Detectors Configured",
-      "No custom Davis Anomaly Detectors are configured. Anomaly detection relies on default baselines only.",
-      "warning",
-      "Configure Davis Anomaly Detectors to define custom thresholds and alerting conditions for critical metrics.",
-      "0 anomaly detector configurations"
-    ) : (davisDetectors ?? 0) < 3 ? mkFinding(
-      "davis.detectors", "Limited Davis Anomaly Detector Coverage",
-      `Only ${davisDetectors} anomaly detector${davisDetectors !== 1 ? "s are" : " is"} configured.`,
+      "davis.detectors", "No Custom Anomaly Detector Rules",
+      "No custom anomaly detector rules are defined. Built-in Davis AI baselines are active, but custom threshold rules for critical KPIs are missing.",
       "info",
-      "Expand anomaly detector coverage to critical services, infrastructure components, and SLO thresholds."
+      "Add custom anomaly detector rules for business-critical metrics where built-in AI baselines may be too broad or too sensitive.",
+      "0 custom anomaly detector configurations"
     ) : undefined
   );
 
@@ -60,7 +57,8 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
   );
 
   // P3: Problem count trend (open problems as health signal)
-  const p3Score = problemCount === 0 ? 100 : problemCount < 10 ? 90 : problemCount < 50 ? 70 : problemCount < 200 ? 50 : 30;
+  // Guard: if Davis is not generating events at all (P2 = 0), zero problems means Davis is off, not that the env is healthy
+  const p3Score = davisEventTotal === 0 ? 50 : problemCount === 0 ? 100 : problemCount < 10 ? 90 : problemCount < 50 ? 70 : problemCount < 200 ? 50 : 30;
   const p3 = mkProbe(
     "davis.problems", "Open problem count", 0.15, p3Score,
     `${problemCount.toLocaleString()} Davis problem${problemCount !== 1 ? "s" : ""} in last 30 days`,

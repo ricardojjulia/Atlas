@@ -3,13 +3,16 @@ import { mkProbe, mkFinding, buildDomain } from "../domainUtils";
 import type { ObsDomainResult } from "../types";
 
 export async function runOneAgentDomain(): Promise<ObsDomainResult> {
+  // Exclude hosts not seen in 30 days to avoid stale decommissioned entities inflating denominators
+  const ACTIVE_HOST_FILTER = "filter toTimestamp(lastSeenTms) > now() - 30d";
   const [modeR, versionR, noGroupR, totalR, candidatesR, zonesR] = await Promise.all([
-    runDql("fetch dt.entity.host | summarize hostCount = count(), by:{monitoringMode}"),
-    runDql("fetch dt.entity.host | fieldsAdd agentVersion = installerVersion | summarize hostCount = count(), by:{agentVersion} | sort hostCount desc"),
-    runDql("fetch dt.entity.host | filter isNull(dt.host_group.id) OR dt.host_group.id == \"\" | summarize count()"),
-    runDql("fetch dt.entity.host | summarize count()"),
+    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | summarize hostCount = count(), by:{monitoringMode}`),
+    // Filter null agentVersion rows — if installerVersion field is absent, all return null → shows 0 versions (unknown)
+    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | fieldsAdd agentVersion = installerVersion | filter isNotNull(agentVersion) | summarize hostCount = count(), by:{agentVersion} | sort hostCount desc`),
+    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | filter isNull(dt.host_group.id) OR dt.host_group.id == "" | summarize count()`),
+    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | summarize count()`),
     runDql("fetch dt.entity.host | filter isMonitoringCandidate == true | summarize count()"),
-    runDql("fetch dt.entity.host | fieldsAdd networkZone | summarize hostCount = count(), by:{networkZone} | sort hostCount desc"),
+    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | fieldsAdd networkZone | summarize hostCount = count(), by:{networkZone} | sort hostCount desc`),
   ]);
 
   const totalHosts = toNum(totalR.records[0]?.["count()"]);
@@ -33,7 +36,7 @@ export async function runOneAgentDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P2: Agent version uniformity
+  // P2: Agent version uniformity (null versions filtered in query — if 0 records, installerVersion field unavailable → unknown)
   const distinctVersions = versionR.records.length;
   const p2Score = distinctVersions === 0 ? 50 : distinctVersions <= 2 ? 100 : distinctVersions <= 5 ? 60 : 0;
   const p2 = mkProbe(
@@ -82,13 +85,13 @@ export async function runOneAgentDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P5: Network zones
+  // P5: Network zones — 0 zones is common for direct SaaS-connected tenants (not a failure, treated as N/A)
   const zoneRows = zonesR.records.filter(r => {
     const z = toStr(r["networkZone"]);
     return z !== "null" && z !== "" && z !== "unknown";
   });
   const zoneCount = zoneRows.length;
-  const p5Score = zoneCount >= 2 ? 100 : zoneCount === 1 ? 70 : 0;
+  const p5Score = zoneCount >= 2 ? 100 : zoneCount === 1 ? 70 : 50;
   const p5 = mkProbe(
     "oa.networkzones", "Network zone utilization", 0.15, p5Score,
     `${zoneCount} network zone${zoneCount !== 1 ? "s" : ""} with host assignments`,

@@ -8,7 +8,6 @@ import { Text, Strong } from "@dynatrace/strato-components/typography";
 import { ProgressBar } from "@dynatrace/strato-components/content";
 import { useObservabilityFullEval } from "../observabilityEval/useObservabilityFullEval";
 import { useObsEvalHistory } from "../observabilityEval/useObsEvalHistory";
-import { evaluateGaps } from "../observabilityEval/gapInsights";
 import type { ObsEvalSnapshot } from "../observabilityEval/useObsEvalHistory";
 import { FindingsTable } from "../tenantReview/components/shared/FindingsTable";
 import { useSegments } from "../hooks/useSegments";
@@ -912,8 +911,8 @@ export const ObservabilityEvaluationPage: React.FC = () => {
             )}
           </Card>
 
-          {/* Gap Insights */}
-          <GapInsightsCard findings={evaluateGaps(handle.results)} dk={dk} />
+          {/* Gap Insights — gap findings (id prefix "gap-") are now included in results.findings */}
+          <GapInsightsCard findings={handle.results.findings.filter(f => f.id.startsWith("gap-"))} dk={dk} />
 
           {/* Findings */}
           {handle.results.findings.length > 0 && (

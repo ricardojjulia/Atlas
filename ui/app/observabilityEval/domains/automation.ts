@@ -1,50 +1,50 @@
+import { workflowsClient } from "@dynatrace-sdk/client-automation";
 import { runDql, toNum } from "../queryRunner";
 import { mkProbe, mkFinding, buildDomain } from "../domainUtils";
 import type { ObsDomainResult } from "../types";
 
 export async function runAutomationDomain(): Promise<ObsDomainResult> {
-  const [execHealthR, deployR] = await Promise.all([
-    runDql(
-      "fetch events, from:now()-30d | filter event.type == \"automation.workflow.execution\" | summarize total = count(), success = countIf(success == true) | fieldsAdd successRate = if(total > 0, success * 100.0 / total, else: 0.0)"
-    ),
+  const [wfResult, deployR] = await Promise.all([
+    workflowsClient.getWorkflows({ limit: 200 }).catch(() => ({ count: 0, results: [] })),
     runDql("fetch events, from:now()-30d | filter event.type == \"CUSTOM_DEPLOYMENT\" | summarize total = count()"),
   ]);
 
-  const totalExecs = toNum(execHealthR.records[0]?.["total"]);
-  const successRate = toNum(execHealthR.records[0]?.["successRate"]);
+  const totalWorkflows = wfResult.count ?? 0;
+  const activeWorkflows = (wfResult.results ?? []).filter(w => w.isDeployed !== false).length;
+  const enabledPct = totalWorkflows > 0 ? Math.round((activeWorkflows / totalWorkflows) * 100) : 0;
   const deployEvents = toNum(deployR.records[0]?.["total"]);
 
-  // P1: Workflows actively executing
-  const p1Score = totalExecs >= 100 ? 100 : totalExecs >= 10 ? 80 : totalExecs >= 1 ? 60 : 0;
+  // P1: Workflow definitions exist and are active
+  const p1Score = totalWorkflows >= 10 ? 100 : totalWorkflows >= 3 ? 80 : totalWorkflows >= 1 ? 60 : 0;
   const p1 = mkProbe(
-    "auto.workflows", "AutomationEngine workflow activity", 0.40, p1Score,
-    totalExecs === 0
-      ? "No workflow executions found in last 30 days"
-      : `${totalExecs.toLocaleString()} workflow execution${totalExecs !== 1 ? "s" : ""} in last 30 days`,
-    "≥ 10 workflow executions in 30 days",
-    totalExecs === 0 ? mkFinding(
-      "auto.workflows", "No Workflow Executions Detected",
-      "No AutomationEngine workflow executions found in the last 30 days.",
+    "auto.workflows", "AutomationEngine workflows defined", 0.40, p1Score,
+    totalWorkflows === 0
+      ? "No AutomationEngine workflows found"
+      : `${totalWorkflows} workflow${totalWorkflows !== 1 ? "s" : ""} defined (${activeWorkflows} enabled)`,
+    "≥ 3 workflows defined",
+    totalWorkflows === 0 ? mkFinding(
+      "auto.workflows", "No AutomationEngine Workflows Defined",
+      "No workflows are configured in AutomationEngine.",
       "warning",
-      "Create and schedule workflows to automate operational tasks such as incident response, capacity management, and reporting.",
-      "0 workflow executions in 30 days"
+      "Create workflows to automate operational tasks: incident response, capacity management, deployment validation, and reporting.",
+      "0 workflows defined"
     ) : undefined
   );
 
-  // P2: Workflow execution health (success rate)
-  const p2Score = totalExecs === 0 ? 50 : successRate >= 95 ? 100 : successRate >= 80 ? Math.round(successRate) : successRate >= 60 ? 50 : 0;
+  // P2: Workflow enablement health (active vs total)
+  const p2Score = totalWorkflows === 0 ? 50 : enabledPct >= 80 ? 100 : enabledPct >= 50 ? enabledPct : Math.round(enabledPct * 0.6);
   const p2 = mkProbe(
-    "auto.health", "Workflow execution success rate", 0.40, p2Score,
-    totalExecs === 0
-      ? "No execution data to evaluate"
-      : `${successRate.toFixed(1)}% workflow execution success rate (last 30 days)`,
-    "≥ 95% workflow success rate",
-    totalExecs > 0 && successRate < 80 ? mkFinding(
-      "auto.health", "Low Workflow Success Rate",
-      `Only ${successRate.toFixed(1)}% of workflow executions succeeded in the last 30 days.`,
-      successRate < 60 ? "warning" : "info",
-      "Review failing workflows in the AutomationEngine UI. Common issues include credential expiry, API rate limits, and task timeouts.",
-      `Success: ${Math.round(successRate * totalExecs / 100).toLocaleString()} of ${totalExecs.toLocaleString()} executions`
+    "auto.health", "Workflow enablement ratio", 0.40, p2Score,
+    totalWorkflows === 0
+      ? "No workflow data to evaluate"
+      : `${activeWorkflows} of ${totalWorkflows} workflows enabled (${enabledPct}%)`,
+    "≥ 80% of workflows enabled",
+    totalWorkflows > 0 && enabledPct < 50 ? mkFinding(
+      "auto.health", "Most Workflows Disabled",
+      `Only ${enabledPct}% of defined workflows are enabled.`,
+      enabledPct < 25 ? "warning" : "info",
+      "Review disabled workflows in the AutomationEngine UI. Re-enable or delete workflows that are no longer relevant.",
+      `Enabled: ${activeWorkflows} of ${totalWorkflows} workflows`
     ) : undefined
   );
 

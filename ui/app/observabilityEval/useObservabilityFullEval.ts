@@ -3,6 +3,7 @@ import { queryExecutionClient } from "@dynatrace-sdk/client-query";
 import type { EstimateResult, ObsFullEvalResults, ObsDomainResult, RoadmapItem } from "./types";
 import { scoreToGrade } from "./types";
 import type { Finding, FindingSeverity } from "../tenantReview/types/review.types";
+import { evaluateGaps } from "./gapInsights";
 import { runOneAgentDomain } from "./domains/oneagent";
 import { runInfraDomain } from "./domains/infra";
 import { runApmDomain } from "./domains/apm";
@@ -165,8 +166,10 @@ export function useObservabilityFullEval(): FullEvalHandle {
       const overallScore = Math.round(weightedSum / totalWeight);
       const overallGrade = scoreToGrade(overallScore);
 
-      const allFindings: Finding[] = (domains as ObsDomainResult[])
-        .flatMap((d: ObsDomainResult) => d.findings)
+      const domainFindings: Finding[] = (domains as ObsDomainResult[]).flatMap((d: ObsDomainResult) => d.findings);
+      const partialResults = { domains, overallScore, overallGrade, findings: domainFindings, roadmap: [], scannedBytes: 0, scannedRecords: 0 };
+      const gapFindings = evaluateGaps(partialResults);
+      const allFindings: Finding[] = [...domainFindings, ...gapFindings]
         .sort((a: Finding, b: Finding) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 
       const roadmap = buildRoadmap(allFindings, domains);

@@ -9,7 +9,7 @@ export async function runDemDomain(): Promise<ObsDomainResult> {
     runDql("fetch user.events, from:now()-30d | summarize total = count()"),
     runDql("fetch dt.entity.synthetic_test | fieldsAdd entity.name, type | summarize testCount = count(), by:{type}"),
     runDql("fetch dt.synthetic.events, from:now()-30d | summarize total = count()"),
-    getSettingsObjectCounts(["builtin:sessionreplay.web.privacy-preferences", "builtin:rum.web.rum-javascript-updates"]),
+    getSettingsObjectCounts(["builtin:sessionreplay.web.privacy-preferences"]),
   ]);
 
   const appCount = toNum(appR.records[0]?.["count()"]);

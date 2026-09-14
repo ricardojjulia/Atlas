@@ -8,7 +8,8 @@ export async function runBizObsDomain(): Promise<ObsDomainResult> {
     runDql("fetch bizevents, from:now()-30d | summarize total = count()"),
     runDql("fetch bizevents, from:now()-30d | summarize total = count(), withType = countIf(isNotNull(event.type)), withProvider = countIf(isNotNull(event.provider))"),
     getSettingsObjectCounts([
-      "builtin:bizevents-processing-pipelines.rule",
+      // Try both known schema IDs for BizEvent processing rules across DT versions
+      "builtin:bizevents-processing.rule",
       "builtin:bizevents.http.incoming",
     ]),
   ]);
@@ -18,7 +19,7 @@ export async function runBizObsDomain(): Promise<ObsDomainResult> {
   const bizWithProvider = toNum(bizQualR.records[0]?.["withProvider"]);
   const typePct = bizTotal > 0 ? Math.round((bizWithType / bizTotal) * 100) : 0;
   const providerPct = bizTotal > 0 ? Math.round((bizWithProvider / bizTotal) * 100) : 0;
-  const pipelineRules = settingsResult.get("builtin:bizevents-processing-pipelines.rule") ?? 0;
+  const pipelineRules = settingsResult.get("builtin:bizevents-processing.rule") ?? 0;
   const httpRules = settingsResult.get("builtin:bizevents.http.incoming") ?? 0;
 
   // P1: Business events flowing

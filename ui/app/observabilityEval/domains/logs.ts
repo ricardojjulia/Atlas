@@ -10,14 +10,17 @@ export async function runLogsDomain(segFilter: string): Promise<ObsDomainResult>
     runDql(`fetch logs, from:now()-24h\n${sf}\n| summarize total = count(), errors = countIf(loglevel == "ERROR" or loglevel == "SEVERE"), warnings = countIf(loglevel == "WARN" or loglevel == "WARNING"), debug = countIf(loglevel == "DEBUG" or loglevel == "TRACE")`),
     runDql(`fetch logs, from:now()-24h\n${sf}\n| summarize total = count(), debugCount = countIf(loglevel == "DEBUG" OR loglevel == "TRACE")`),
     runDql("fetch dt.system.buckets | fieldsKeep name, records, retention_days, estimated_uncompressed_bytes"),
-    getSettingsObjectCounts(["builtin:openpipeline.logs.pipelines"]),
+    // Try both the new OpenPipeline schema and the legacy LMA processing rule schema
+    getSettingsObjectCounts(["builtin:openpipeline.logs.pipelines", "builtin:logmonitoring.log-dpp-processor-rule"]),
   ]);
 
   const totalLogs = toNum(logVolR.records[0]?.["total"]);
   const errorLogs = toNum(logVolR.records[0]?.["errors"]);
   const debugLogs = toNum(debugR.records[0]?.["debugCount"]);
   const debugTotal = toNum(debugR.records[0]?.["total"]);
-  const openPipelineCount = settingsResult.get("builtin:openpipeline.logs.pipelines") ?? 0;
+  // Combine both schemas: new OpenPipeline config OR legacy LMA processing rules both indicate log processing is active
+  const openPipelineCount = (settingsResult.get("builtin:openpipeline.logs.pipelines") ?? 0)
+    + (settingsResult.get("builtin:logmonitoring.log-dpp-processor-rule") ?? 0);
 
   // P1: Logs ingested into Grail
   const p1Score = totalLogs > 0 ? 100 : 0;

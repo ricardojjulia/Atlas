@@ -7,12 +7,13 @@ export async function runApmDomain(segFilter: string): Promise<ObsDomainResult> 
 
   const [spanSvcR, spanQualityR, cloudFuncR, azureFuncR, faasSvcR, svcMethodR, topSvcR] = await Promise.all([
     runDql(`fetch spans, from:now()-24h\n${sf}\n| filter isNotNull(dt.entity.service)\n| summarize active = countDistinct(dt.entity.service)`),
-    runDql(`fetch spans, from:now()-30d\n${sf}\n| summarize total = count(), withDbSystem = countIf(isNotNull(db.system)), withServiceName = countIf(isNotNull(service.name))`),
-    runDql("fetch dt.entity.aws_lambda_function | summarize count()"),
-    runDql("fetch dt.entity.azure_function_app | summarize count()"),
+    runDql(`fetch spans, from:now()-30d\n${sf}\n| summarize total = count(), withDbStatement = countIf(isNotNull(db.statement)), withServiceName = countIf(isNotNull(service.name))`),
+    // Filter to recently-seen functions to match the 7d span window below
+    runDql("fetch dt.entity.aws_lambda_function | filter toTimestamp(lastSeenTms) > now() - 7d | summarize count()"),
+    runDql("fetch dt.entity.azure_function_app | filter toTimestamp(lastSeenTms) > now() - 7d | summarize count()"),
     runDql(`fetch spans, from:now()-7d\n${sf}\n| filter isNotNull(faas.name) or isNotNull(faas.id)\n| summarize instrumented = countDistinct(coalesce(faas.name, faas.id))`),
     runDql("fetch dt.entity.service_method | summarize count()"),
-    runDql(`fetch spans, from:now()-24h\n${sf}\n| fieldsAdd svc = coalesce(dt.entity.service, service.name)\n| filter isNotNull(svc)\n| summarize total = count(), errors = countIf(toBoolean(otel.status_code == "ERROR")), by:{svc}\n| fieldsAdd errorRate = round(toDouble(errors) / toDouble(total) * 100.0, 1)\n| sort total desc\n| limit 20`),
+    runDql(`fetch spans, from:now()-24h\n${sf}\n| fieldsAdd svc = coalesce(dt.entity.service, service.name)\n| filter isNotNull(svc)\n| summarize total = count(), errors = countIf(otel.status_code == "ERROR" or error == true or isNotNull(exception.type)), by:{svc}\n| fieldsAdd errorRate = round(toDouble(errors) / toDouble(total) * 100.0, 1)\n| sort total desc\n| limit 20`),
   ]);
 
   // P1: Services with active tracing
@@ -72,20 +73,21 @@ export async function runApmDomain(segFilter: string): Promise<ObsDomainResult> 
     ) : undefined
   );
 
-  // P4: DB statement capture
+  // P4: DB statement capture (checks db.statement — the actual SQL/query text, not just db.system presence)
   const spanTotal = toNum(spanQualityR.records[0]?.["total"]);
-  const spanWithDb = toNum(spanQualityR.records[0]?.["withDbSystem"]);
+  const spanWithDb = toNum(spanQualityR.records[0]?.["withDbStatement"]);
   const dbPct = spanTotal > 0 ? Math.round((spanWithDb / spanTotal) * 100) : 0;
   const p4Score = spanTotal === 0 ? 50 : spanWithDb > 0 ? 100 : 30;
   const p4 = mkProbe(
     "apm.dbcapture", "Database statement capture", 0.15, p4Score,
-    spanTotal === 0 ? "No span data available" : `${spanWithDb.toLocaleString()} of ${spanTotal.toLocaleString()} spans have db.system attribute (${dbPct}%)`,
-    "> 0 spans with db.system captured",
+    spanTotal === 0 ? "No span data available" : `${spanWithDb.toLocaleString()} of ${spanTotal.toLocaleString()} spans have db.statement attribute (${dbPct}%)`,
+    "> 0 spans with db.statement captured",
     spanTotal > 0 && spanWithDb === 0 ? mkFinding(
       "apm.dbcapture", "No Database Statement Capture",
-      "No spans include the db.system attribute — database calls are not being captured as distributed trace spans.",
+      "No spans include the db.statement attribute — SQL query text is not being captured for database call tracing.",
       "info",
-      "Ensure OneAgent database sensors are enabled or that OTel SDK instrumentation includes database span attributes."
+      "Enable OneAgent database statement capture in service detection settings, or ensure OTel instrumentation sets the db.statement span attribute.",
+      "0 spans with db.statement in 30d window"
     ) : undefined
   );
 
