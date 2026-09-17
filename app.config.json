@@ -5,7 +5,7 @@
     "name": "Atlas",
     "description": "Tenant maturity, instrumentation gaps, and observability adoption insights.",
     "icon": "ui/assets/icon.svg",
-    "version": "2.9.8",
+    "version": "2.9.9",
     "scopes": [
       { "name": "storage:logs:read", "comment": "Log Analytics coverage" },
       { "name": "storage:events:read", "comment": "Security, Delivery, Problems" },
