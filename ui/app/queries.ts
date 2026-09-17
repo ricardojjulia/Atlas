@@ -320,8 +320,9 @@ export const CAPABILITIES: CapabilityDef[] = [
       },
       {
         id: "a14", label: "Frontend trace correlation (%)",
-        description: "Percentage of web applications with request events carrying a trace id so browser activity can be tied back to backend spans.",
-        query: "fetch user.events, from:now()-24h | filter characteristics.has_request == true | filter isNotNull(trace.id) | summarize c=countDistinct(dt.rum.application.entity) | fields c",
+        description: "Percentage of web applications with user actions carrying a trace ID so browser activity can be tied back to backend spans.",
+        // TODO(Gen3): migrate to user.events with characteristics.has_request == true and dt.rum.application.entity
+        query: "fetch user_actions, from:now()-24h | filter isNotNull(trace.id) | summarize c=countDistinct(application.entity.id) | fields c",
         queryB: "fetch dt.entity.application | summarize count()",
         thresholds: [{ min: 60 }, { min: 25 }, { min: 1 }],
       },
@@ -452,28 +453,33 @@ export const CAPABILITIES: CapabilityDef[] = [
       {
         id: "d12", label: "Session replay coverage (%)",
         description: "Percentage of web applications with session replay data so customer journeys can be replayed and investigated.",
-        query: "fetch user.replays, from:now()-24h | summarize c=countDistinct(dt.rum.application.entity) | fields c",
+        // TODO(Gen3): migrate to user.replays with dt.rum.application.entity
+        query: "fetch user_actions, from:now()-24h | filter useraction.hasReplay == true | summarize c=countDistinct(application.entity.id) | fields c",
         queryB: "fetch dt.entity.application | summarize count()",
         thresholds: [{ min: 40 }, { min: 15 }, { min: 1 }],
       },
       {
         id: "d13", label: "Navigation journey coverage (%)",
-        description: "Percentage of web applications with navigation events so funnels, paths, and drop-offs can be understood.",
-        query: "fetch user.events, from:now()-24h | filter characteristics.has_navigation == true | summarize c=countDistinct(dt.rum.application.entity) | fields c",
+        description: "Percentage of web applications with page load (navigation) events so funnels, paths, and drop-offs can be understood.",
+        // TODO(Gen3): migrate to user.events with characteristics.has_navigation == true
+        query: "fetch user_actions, from:now()-24h | filter useraction.type == \"Load\" | summarize c=countDistinct(application.entity.id) | fields c",
         queryB: "fetch dt.entity.application | summarize count()",
         thresholds: [{ min: 60 }, { min: 25 }, { min: 1 }],
       },
       {
         id: "d14", label: "Page/view summary coverage (%)",
-        description: "Percentage of web and mobile applications with page or view summary data for engagement analysis.",
-        query: "fetch user.events, from:now()-24h | filter characteristics.has_page_summary == true or characteristics.has_view_summary == true | summarize c=countDistinct(dt.rum.application.entity) | fields c",
+        description: "Percentage of web applications with page load data for engagement analysis.",
+        // TODO(Gen3): migrate to user.events with characteristics.has_page_summary / has_view_summary
+        // Classic Grail: Load-type actions are the closest equivalent to page/view summaries
+        query: "fetch user_actions, from:now()-24h | filter useraction.type == \"Load\" | summarize c=countDistinct(application.entity.id) | fields c",
         queryB: "fetch dt.entity.application | summarize count()",
         thresholds: [{ min: 60 }, { min: 25 }, { min: 1 }],
       },
       {
         id: "d15", label: "Mobile crash coverage (%)",
-        description: "Percentage of mobile applications with crash or ANR telemetry for mobile demystification and triage.",
-        query: "fetch user.events, from:now()-7d | filter characteristics.has_crash == true or characteristics.has_anr == true | summarize c=countDistinct(dt.rum.application.entity) | fields c",
+        description: "Percentage of mobile applications with crash telemetry for mobile triage.",
+        // TODO(Gen3): migrate to user.events with characteristics.has_crash / has_anr
+        query: "fetch mobile_crash, from:now()-7d | summarize c=countDistinct(application.entity.id) | fields c",
         queryB: "fetch dt.entity.mobile_application | summarize count()",
         applicabilityQuery: "fetch dt.entity.mobile_application | summarize count()",
         thresholds: [{ min: 50 }, { min: 20 }, { min: 1 }],
@@ -1061,8 +1067,10 @@ export const CAPABILITIES: CapabilityDef[] = [
       },
       {
         id: "sd12", label: "Active SLO coverage (%)",
-        description: "Percentage of defined SLOs that are currently enabled and enforcing reliability targets.",
-        query: "fetch dt.entity.service_level_objective\n| filter enabled == true\n| summarize count()",
+        description: "Percentage of SLOs with evaluation events in the last 7 days — only enabled SLOs are periodically evaluated and generate events.",
+        // entity fetch does not expose the enabled settings flag — use events as proxy for active SLOs
+        // TODO(Gen3): replace with dt.settings.object query when available on all tenants
+        query: "fetch events, from:now()-7d | filter isNotNull(dt.entity.service_level_objective) | summarize countDistinct(dt.entity.service_level_objective)",
         queryB: "fetch dt.entity.service_level_objective\n| summarize count()",
         thresholds: [{ min: 80 }, { min: 50 }, { min: 1 }],
       },
