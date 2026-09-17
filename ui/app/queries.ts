@@ -569,7 +569,7 @@ export const CAPABILITIES: CapabilityDef[] = [
       {
         id: "l12", label: "Structured logging (%)",
         description: "Percentage of logs containing structured JSON content for better parsing and analysis.",
-        query: `fetch logs | filter timestamp > now() - 2h | filter contains(content, '{"') | summarize count()`,
+        query: `fetch logs | filter timestamp > now() - 2h | filter contains(content, "{") | summarize count()`,
         queryB: "fetch logs | filter timestamp > now() - 2h | summarize count()",
         thresholds: [{ min: 50 }, { min: 20 }, { min: 1 }],
       },
