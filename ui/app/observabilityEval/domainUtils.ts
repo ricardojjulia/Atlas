@@ -41,7 +41,8 @@ export function buildDomain(
   probes: ObsProbeResult[],
   error?: string
 ): ObsDomainResult {
-  const score = calcDomainScore(probes);
+  // When an error is present, score 0 explicitly — errored domains must not contribute to weighted averages
+  const score = error ? 0 : calcDomainScore(probes);
   const grade = scoreToGrade(score);
   const findings = probes.filter(p => p.finding).map(p => p.finding!);
   return { id, name, icon, score, grade, probes, findings, error };

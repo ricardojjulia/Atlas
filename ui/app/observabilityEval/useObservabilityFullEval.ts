@@ -46,7 +46,8 @@ async function quickCount(query: string): Promise<number> {
     const rec = (r?.result?.records ?? []) as Record<string, unknown>[];
     const val = rec[0];
     if (!val) return 0;
-    const n = Object.values(val)[0];
+    // Prefer explicit "count()" key from summarize count(); fall back to first column for aliased queries
+    const n = val["count()"] ?? Object.values(val)[0];
     return typeof n === "number" ? n : typeof n === "string" ? parseFloat(n) || 0 : 0;
   } catch {
     return 0;
@@ -54,7 +55,6 @@ async function quickCount(query: string): Promise<number> {
 }
 
 function buildRoadmap(findings: Finding[], domains: ObsFullEvalResults["domains"]): RoadmapItem[] {
-  const domainNameById = Object.fromEntries(domains.map(d => [d.id, d.name]));
   const domainByFindingId: Record<string, string> = {};
   for (const domain of domains) {
     for (const f of domain.findings) {
@@ -149,34 +149,43 @@ export function useObservabilityFullEval(): FullEvalHandle {
         return domain;
       });
 
+    // Per-domain catch: one domain failing does not kill the full evaluation
+    const safe = (p: Promise<ObsDomainResult>, id: string, name: string, icon: string): Promise<ObsDomainResult> =>
+      p.catch((err: unknown): ObsDomainResult => ({
+        id, name, icon, score: 0, grade: "F", probes: [], findings: [],
+        error: err instanceof Error ? err.message : "Evaluation error",
+      }));
+
     Promise.all([
-      wrap(runOneAgentDomain()),
-      wrap(runInfraDomain(segId)),
-      wrap(runApmDomain(segId)),
-      wrap(runLogsDomain(segId)),
-      wrap(runDemDomain()),
-      wrap(runDavisDomain()),
-      wrap(runAutomationDomain()),
-      wrap(runGovernanceDomain()),
-      wrap(runBizObsDomain()),
-      wrap(runExtensionsDomain()),
+      wrap(safe(runOneAgentDomain(), "oneagent", "OneAgent Deployment", "◈")),
+      wrap(safe(runInfraDomain(segId), "infra", "Infrastructure Coverage", "▦")),
+      wrap(safe(runApmDomain(segId), "apm", "Application Observability", "⟳")),
+      wrap(safe(runLogsDomain(segId), "logs", "Log Management & OpenPipeline", "≡")),
+      wrap(safe(runDemDomain(), "dem", "Digital Experience (DEM/RUM)", "◉")),
+      wrap(safe(runDavisDomain(), "davis", "Davis AI & Alerting", "△")),
+      wrap(safe(runAutomationDomain(), "automation", "Automation & Workflows", "⚙")),
+      wrap(safe(runGovernanceDomain(), "governance", "Platform Governance", "⚑")),
+      wrap(safe(runBizObsDomain(), "bizobs", "Business Observability", "◇")),
+      wrap(safe(runExtensionsDomain(), "extensions", "Extensions & Cloud Integrations", "⊕")),
     ]).then((domains: ObsDomainResult[]) => {
       if (cancelledRef.current) return;
 
-      const totalWeight = domains.reduce((s: number, d: ObsDomainResult) => s + (DOMAIN_WEIGHTS[d.id] ?? 1), 0);
-      const weightedSum = domains.reduce((s: number, d: ObsDomainResult) => s + d.score * (DOMAIN_WEIGHTS[d.id] ?? 1), 0);
-      const overallScore = Math.round(weightedSum / totalWeight);
+      // Exclude errored domains from the weighted average so a single API failure doesn't tank the overall score
+      const scoredDomains = domains.filter(d => !d.error);
+      const totalWeight = scoredDomains.reduce((s: number, d: ObsDomainResult) => s + (DOMAIN_WEIGHTS[d.id] ?? 1), 0);
+      const weightedSum = scoredDomains.reduce((s: number, d: ObsDomainResult) => s + d.score * (DOMAIN_WEIGHTS[d.id] ?? 1), 0);
+      const overallScore = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 0;
       const overallGrade = scoreToGrade(overallScore);
 
       const domainFindings: Finding[] = (domains as ObsDomainResult[]).flatMap((d: ObsDomainResult) => d.findings);
-      const partialResults = { domains, overallScore, overallGrade, findings: domainFindings, roadmap: [], scannedBytes: 0, scannedRecords: 0 };
+      const partialResults = { domains, overallScore, overallGrade, findings: domainFindings, roadmap: [], scannedBytes: 0, scannedRecords: 0, runAt: 0 };
       const gapFindings = evaluateGaps(partialResults);
       const allFindings: Finding[] = [...domainFindings, ...gapFindings]
         .sort((a: Finding, b: Finding) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 
       const roadmap = buildRoadmap(allFindings, domains);
 
-      setResults({ domains, overallScore, overallGrade, findings: allFindings, roadmap, scannedBytes: 0, scannedRecords: 0 });
+      setResults({ domains, overallScore, overallGrade, findings: allFindings, roadmap, scannedBytes: 0, scannedRecords: 0, runAt: Date.now() });
       setPhase("done");
     }).catch((err: unknown) => {
       if (cancelledRef.current) return;

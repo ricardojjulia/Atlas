@@ -6,10 +6,9 @@ import type { ObsDomainResult } from "../types";
 export async function runLogsDomain(segFilter: string): Promise<ObsDomainResult> {
   const sf = segFilter ? `| filter filterSegments("${segFilter}")` : "";
 
-  const [logVolR, debugR, bucketR, settingsResult] = await Promise.all([
+  const [logVolR, bucketR, settingsResult] = await Promise.all([
     runDql(`fetch logs, from:now()-24h\n${sf}\n| summarize total = count(), errors = countIf(loglevel == "ERROR" or loglevel == "SEVERE"), warnings = countIf(loglevel == "WARN" or loglevel == "WARNING"), debug = countIf(loglevel == "DEBUG" or loglevel == "TRACE"), structured = countIf(isNotNull(loglevel) and loglevel != "NONE" and loglevel != "")`),
-    runDql(`fetch logs, from:now()-24h\n${sf}\n| summarize total = count(), debugCount = countIf(loglevel == "DEBUG" OR loglevel == "TRACE")`),
-    runDql("fetch dt.system.buckets | fieldsKeep name, records, retention_days, estimated_uncompressed_bytes"),
+    runDql("fetch dt.system.buckets | fieldsKeep name, retention_days"),
     // Try both the new OpenPipeline schema and the legacy LMA processing rule schema
     getSettingsObjectCounts(["builtin:openpipeline.logs.pipelines", "builtin:logmonitoring.log-dpp-processor-rule"]),
   ]);
@@ -17,8 +16,8 @@ export async function runLogsDomain(segFilter: string): Promise<ObsDomainResult>
   const totalLogs = toNum(logVolR.records[0]?.["total"]);
   const errorLogs = toNum(logVolR.records[0]?.["errors"]);
   const structuredLogs = toNum(logVolR.records[0]?.["structured"]);
-  const debugLogs = toNum(debugR.records[0]?.["debugCount"]);
-  const debugTotal = toNum(debugR.records[0]?.["total"]);
+  // debug count comes from the same logVolR query — no need for a separate scan
+  const debugLogs = toNum(logVolR.records[0]?.["debug"]);
   // Combine both schemas: new OpenPipeline config OR legacy LMA processing rules both indicate log processing is active
   const openPipelineCount = (settingsResult.get("builtin:openpipeline.logs.pipelines") ?? 0)
     + (settingsResult.get("builtin:logmonitoring.log-dpp-processor-rule") ?? 0);
@@ -26,7 +25,7 @@ export async function runLogsDomain(segFilter: string): Promise<ObsDomainResult>
   // P1: Logs ingested into Grail
   const p1Score = totalLogs > 0 ? 100 : 0;
   const p1 = mkProbe(
-    "logs.ingest", "Log ingestion into Grail", 0.20, p1Score,
+    "logs.ingest", "Log ingestion into Grail", 0.25, p1Score,
     totalLogs > 0 ? `${totalLogs.toLocaleString()} log events ingested in last 24h` : "No log events found in last 24h",
     "> 0 log events ingested",
     totalLogs === 0 ? mkFinding(
@@ -57,25 +56,26 @@ export async function runLogsDomain(segFilter: string): Promise<ObsDomainResult>
   );
 
   // P3: Debug/trace log contamination
-  const debugPct = debugTotal > 0 ? (debugLogs / debugTotal) * 100 : 0;
-  const p3Score = debugTotal === 0 ? 50 : debugPct <= 5 ? 100 : debugPct <= 15 ? Math.round(100 - (debugPct - 5) * 5) : 30;
+  const debugPct = totalLogs > 0 ? (debugLogs / totalLogs) * 100 : 0;
+  // Use strict < 15 so the boundary falls to the explicit 30 branch; clamp middle branch ≥51 to avoid sentinel at 14.99%
+  const p3Score = totalLogs === 0 ? 50 : debugPct <= 5 ? 100 : debugPct < 15 ? Math.max(51, Math.round(100 - (debugPct - 5) * 5)) : 30;
   const p3 = mkProbe(
     "logs.debug", "Debug log contamination", 0.20, p3Score,
-    debugTotal === 0 ? "No log data to evaluate" : `${debugPct.toFixed(1)}% debug/trace logs (${debugLogs.toLocaleString()} events)`,
-    "< 5% debug/trace log volume",
-    debugPct > 15 && debugTotal > 0 ? mkFinding(
+    totalLogs === 0 ? "No log data to evaluate" : `${debugPct.toFixed(1)}% debug/trace logs (${debugLogs.toLocaleString()} events)`,
+    "≤ 5% debug/trace log volume",
+    debugPct > 15 && totalLogs > 0 ? mkFinding(
       "logs.debug", "High Debug Log Volume",
       `${debugPct.toFixed(1)}% of ingested logs are at DEBUG or TRACE level, consuming unnecessary Grail storage.`,
       "warning",
       "Configure OpenPipeline log processing rules to drop or down-sample DEBUG/TRACE logs before storage.",
-      `Debug/trace: ${debugLogs.toLocaleString()} of ${debugTotal.toLocaleString()} events`
+      `Debug/trace: ${debugLogs.toLocaleString()} of ${totalLogs.toLocaleString()} events`
     ) : undefined
   );
 
   // P4: OpenPipeline log pipelines configured
   const p4Score = (openPipelineCount ?? 0) >= 1 ? 100 : 0;
   const p4 = mkProbe(
-    "logs.openpipeline", "OpenPipeline configured", 0.25, p4Score,
+    "logs.openpipeline", "OpenPipeline configured", 0.20, p4Score,
     `${openPipelineCount ?? 0} OpenPipeline log pipeline configuration${openPipelineCount !== 1 ? "s" : ""}`,
     "≥ 1 OpenPipeline log pipeline",
     (openPipelineCount ?? 0) === 0 ? mkFinding(

@@ -85,16 +85,16 @@ export function buildObsEvalPdf(results: ObsFullEvalResults, meta: ObsEvalPdfMet
   const W = 210, H = 297, M = 15, CW = W - 2 * M;
   let y = 0;
 
-  // Design tokens — dark navy theme
-  const BG: [number, number, number]       = [10, 12, 30];
-  const SURF: [number, number, number]     = [18, 22, 55];
-  const SURF2: [number, number, number]    = [26, 32, 70];
-  const BLUE: [number, number, number]     = [20, 100, 255];
-  const BLUE_DIM: [number, number, number] = [40, 70, 160];
-  const TEAL: [number, number, number]     = [0, 195, 155];
-  const TXT1: [number, number, number]     = [228, 232, 255];
-  const TXT2: [number, number, number]     = [120, 130, 175];
-  const TXT3: [number, number, number]     = [65, 75, 115];
+  // Design tokens — clean white professional theme
+  const BG: [number, number, number]       = [255, 255, 255];   // page white
+  const SURF: [number, number, number]     = [246, 248, 253];   // card / alt-row tint
+  const SURF2: [number, number, number]    = [228, 233, 245];   // table header, dividers
+  const BLUE: [number, number, number]     = [0, 100, 210];     // Dynatrace brand blue
+  const BLUE_DIM: [number, number, number] = [75, 125, 190];    // muted blue accents
+  const TEAL: [number, number, number]     = [0, 148, 115];     // recommendation / pass
+  const TXT1: [number, number, number]     = [18, 24, 45];      // headlines
+  const TXT2: [number, number, number]     = [62, 74, 105];     // body text
+  const TXT3: [number, number, number]     = [132, 145, 172];   // labels, captions
 
   const paintBg = () => {
     pdf.setFillColor(...BG);
@@ -303,12 +303,12 @@ export function buildObsEvalPdf(results: ObsFullEvalResults, meta: ObsEvalPdfMet
   paintBg();
 
   const HERO_H = 58;
-  pdf.setFillColor(...SURF);
+  pdf.setFillColor(...BLUE);                          // brand-blue hero band
   pdf.rect(0, 0, W, HERO_H, "F");
-  pdf.setFillColor(...BLUE);
+  pdf.setFillColor(...TEAL);                          // teal left accent
   pdf.rect(0, 0, 5, HERO_H, "F");
-  // Decorative diagonals
-  pdf.setDrawColor(...BLUE_DIM); pdf.setLineWidth(0.25);
+  // Decorative diagonals — subtly lighter blue on blue background
+  pdf.setDrawColor(20, 118, 232); pdf.setLineWidth(0.25);
   for (let di = 0; di < 7; di++) {
     const ox = W - 60 + di * 11;
     pdf.line(ox, 0, ox + HERO_H * 0.6, HERO_H);
@@ -320,12 +320,12 @@ export function buildObsEvalPdf(results: ObsFullEvalResults, meta: ObsEvalPdfMet
   pdf.setTextColor(255, 255, 255);
   pdf.text("ATLAS", M + 6, 26);
   pdf.setFontSize(9); pdf.setFont("helvetica", "normal");
-  pdf.setTextColor(...BLUE_DIM);
+  pdf.setTextColor(200, 225, 255);                    // light blue-white on blue hero
   pdf.text("Observability Evaluation Report", M + 6, 36);
   pdf.setFontSize(7); pdf.setFont(BODY_FONT, "normal");
-  pdf.setTextColor(...TXT3);
+  pdf.setTextColor(180, 205, 245);                    // dimmer light on blue hero
   pdf.text(`${meta.tenant}  ·  ${meta.date}  ·  v${meta.appVersion}`, M + 6, 44);
-  pdf.setDrawColor(...BLUE); pdf.setLineWidth(0.6);
+  pdf.setDrawColor(255, 255, 255); pdf.setLineWidth(0.6);   // white separator on blue
   pdf.line(M + 6, 50, M + 6 + 55, 50);
   pdf.setLineWidth(0.2);
 
@@ -336,13 +336,14 @@ export function buildObsEvalPdf(results: ObsFullEvalResults, meta: ObsEvalPdfMet
   const circleY = HERO_H / 2 + 2;
   pdf.setDrawColor(...gRgb); pdf.setLineWidth(1.8);
   pdf.circle(circleX, circleY, 18, "S");
-  pdf.setFillColor(Math.round(gRgb[0] * 0.1 + BG[0]), Math.round(gRgb[1] * 0.1 + BG[1]), Math.round(gRgb[2] * 0.1 + BG[2]));
+  // Interior: blend grade colour against the blue hero so the circle pops
+  pdf.setFillColor(Math.round(gRgb[0] * 0.12 + BLUE[0] * 0.88), Math.round(gRgb[1] * 0.12 + BLUE[1] * 0.88), Math.round(gRgb[2] * 0.12 + BLUE[2] * 0.88));
   pdf.circle(circleX, circleY, 17, "F");
   pdf.setFontSize(28); pdf.setFont("helvetica", "bold");
   pdf.setTextColor(...gRgb);
   pdf.text(gc, circleX, circleY + 7, { align: "center" });
   pdf.setFontSize(7.5); pdf.setFont(BODY_FONT, "normal");
-  pdf.setTextColor(...TXT2);
+  pdf.setTextColor(220, 235, 255);                    // light on blue hero
   pdf.text(`${results.overallScore} / 100`, circleX, circleY + 21, { align: "center" });
   pdf.setFontSize(6.5);
   pdf.setTextColor(...gRgb);

@@ -9,20 +9,24 @@ export async function runAutomationDomain(): Promise<ObsDomainResult> {
     runDql("fetch events, from:now()-30d | filter event.type == \"CUSTOM_DEPLOYMENT\" | summarize total = count()"),
   ]);
 
-  const totalWorkflows = wfResult.count ?? 0;
-  const activeWorkflows = (wfResult.results ?? []).filter(w => w.isDeployed !== false).length;
+  // Use results.length as denominator so activeWorkflows and totalWorkflows come from the same ≤200 sample
+  const workflowsPage = wfResult.results ?? [];
+  const totalWorkflowsApiCount = wfResult.count ?? workflowsPage.length;
+  const totalWorkflows = workflowsPage.length;
+  // isDeployed === true explicitly — undefined (field absent) should not count as enabled
+  const activeWorkflows = workflowsPage.filter(w => w.isDeployed === true).length;
   const enabledPct = totalWorkflows > 0 ? Math.round((activeWorkflows / totalWorkflows) * 100) : 0;
   const deployEvents = toNum(deployR.records[0]?.["total"]);
 
-  // P1: Workflow definitions exist and are active
-  const p1Score = totalWorkflows >= 10 ? 100 : totalWorkflows >= 3 ? 80 : totalWorkflows >= 1 ? 60 : 0;
+  // P1: Workflow definitions exist — use API total count (not page slice) for accurate scoring
+  const p1Score = totalWorkflowsApiCount >= 10 ? 100 : totalWorkflowsApiCount >= 3 ? 80 : totalWorkflowsApiCount >= 1 ? 60 : 0;
   const p1 = mkProbe(
     "auto.workflows", "AutomationEngine workflows defined", 0.35, p1Score,
-    totalWorkflows === 0
+    totalWorkflowsApiCount === 0
       ? "No AutomationEngine workflows found"
-      : `${totalWorkflows} workflow${totalWorkflows !== 1 ? "s" : ""} defined (${activeWorkflows} enabled)`,
+      : `${totalWorkflowsApiCount} workflow${totalWorkflowsApiCount !== 1 ? "s" : ""} defined (${activeWorkflows} of ${totalWorkflows} sampled enabled)`,
     "≥ 3 workflows defined",
-    totalWorkflows === 0 ? mkFinding(
+    totalWorkflowsApiCount === 0 ? mkFinding(
       "auto.workflows", "No AutomationEngine Workflows Defined",
       "No workflows are configured in AutomationEngine.",
       "warning",
@@ -31,8 +35,8 @@ export async function runAutomationDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P2: Workflow enablement health (active vs total)
-  const p2Score = totalWorkflows === 0 ? 50 : enabledPct >= 80 ? 100 : enabledPct >= 50 ? enabledPct : Math.round(enabledPct * 0.6);
+  // P2: Workflow enablement health — Math.max(51,...) prevents exact-50% from hitting sentinel
+  const p2Score = totalWorkflows === 0 ? 50 : enabledPct >= 80 ? 100 : enabledPct >= 50 ? Math.max(51, enabledPct) : Math.round(enabledPct * 0.6);
   const p2 = mkProbe(
     "auto.health", "Workflow enablement ratio", 0.35, p2Score,
     totalWorkflows === 0

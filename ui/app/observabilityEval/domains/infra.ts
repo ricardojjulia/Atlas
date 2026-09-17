@@ -1,19 +1,19 @@
-import { runDql, toNum, toStr } from "../queryRunner";
+import { runDql, toNum } from "../queryRunner";
 import { mkProbe, mkFinding, buildDomain } from "../domainUtils";
 import type { ObsDomainResult } from "../types";
 
 export async function runInfraDomain(segFilter: string): Promise<ObsDomainResult> {
   const sf = segFilter ? `| filter filterSegments("${segFilter}")` : "";
 
-  const [hostR, svcR, activeSpanSvcR, totalSvcR, stalePgiR, k8sR] = await Promise.all([
-    runDql("fetch dt.entity.host | summarize count()"),
-    runDql("fetch dt.entity.service | summarize count()"),
+  const [hostR, svcR, activeSpanSvcR, stalePgiR, k8sR] = await Promise.all([
+    // 30d staleness filter removes decommissioned hosts from the monitored count
+    runDql("fetch dt.entity.host | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
+    runDql("fetch dt.entity.service | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
     // 7d window avoids false ghost readings from batch/weekly workloads with irregular traffic
     runDql(`fetch spans, from:now()-7d\n${sf}\n| filter isNotNull(dt.entity.service)\n| summarize active = countDistinct(dt.entity.service)`),
-    runDql("fetch dt.entity.service | summarize count()"),
-    // lastSeenTms field availability varies by DT version — if null/unavailable, filter silently returns 0 (no stale PGIs detected)
-    runDql("fetch dt.entity.process_group_instance | filter isNotNull(lastSeenTms) and toTimestamp(lastSeenTms) < now() - 7d | summarize count()"),
-    runDql("fetch dt.entity.kubernetes_cluster | summarize count()"),
+    // 30d window aligns with entity staleness convention used across the app
+    runDql("fetch dt.entity.process_group_instance | filter isNotNull(lastSeenTms) and toTimestamp(lastSeenTms) < now() - 30d | summarize count()"),
+    runDql("fetch dt.entity.kubernetes_cluster | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
   ]);
 
   // P1: Host baseline
@@ -31,8 +31,9 @@ export async function runInfraDomain(segFilter: string): Promise<ObsDomainResult
     ) : undefined
   );
 
-  // P2: Service detection
+  // P2: Service detection — totalSvcs reuses svcCount (eliminated duplicate query)
   const svcCount = toNum(svcR.records[0]?.["count()"]);
+  const totalSvcs = svcCount;
   const p2Score = svcCount >= 5 ? 100 : svcCount >= 1 ? 70 : hostCount > 0 ? 0 : 50;
   const p2 = mkProbe(
     "infra.services", "Service detection", 0.20, p2Score,
@@ -46,18 +47,18 @@ export async function runInfraDomain(segFilter: string): Promise<ObsDomainResult
     ) : undefined
   );
 
-  // P3: Active service rate (services with live spans in last 24h)
+  // P3: Active service rate (services with live spans in last 7d)
   const activeSvcs = toNum(activeSpanSvcR.records[0]?.["active"]);
-  const totalSvcs = toNum(totalSvcR.records[0]?.["count()"]);
   const activePct = totalSvcs > 0 ? Math.round((activeSvcs / totalSvcs) * 100) : 0;
   const ghostCount = Math.max(0, totalSvcs - activeSvcs);
-  const p3Score = totalSvcs === 0 ? 50 : activePct >= 75 ? 100 : activePct >= 50 ? activePct : Math.round(activePct * 0.6);
+  // Math.max(51,...) prevents exact-50% active rate colliding with the unknown sentinel
+  const p3Score = totalSvcs === 0 ? 50 : activePct >= 75 ? 100 : activePct >= 50 ? Math.max(51, activePct) : Math.round(activePct * 0.6);
   const p3 = mkProbe(
     "infra.activesvcs", "Active service rate", 0.25, p3Score,
     `${activeSvcs} of ${totalSvcs} services with live traffic in last 7 days (${activePct}%)`,
     "≥ 75% of services actively receiving traffic",
     ghostCount > totalSvcs * 0.25 ? mkFinding(
-      "infra.ghostsvcs", "High Ghost Service Ratio",
+      "infra.activesvcs", "High Ghost Service Ratio",
       `${ghostCount} service${ghostCount !== 1 ? "s" : ""} (${100 - activePct}%) exist in topology but sent no request data in the last 7 days.`,
       ghostCount > totalSvcs * 0.5 ? "warning" : "info",
       "Review ghost services — decommissioned services should be removed to keep topology clean.",
@@ -70,14 +71,14 @@ export async function runInfraDomain(segFilter: string): Promise<ObsDomainResult
   const p4Score = stalePgis === 0 ? 100 : stalePgis <= 10 ? 70 : stalePgis <= 50 ? 40 : 0;
   const p4 = mkProbe(
     "infra.stalepgi", "Stale process group instances", 0.15, p4Score,
-    `${stalePgis} process group instance${stalePgis !== 1 ? "s" : ""} not seen in > 7 days`,
+    `${stalePgis} process group instance${stalePgis !== 1 ? "s" : ""} not seen in > 30 days`,
     "0 stale process group instances",
     stalePgis > 0 ? mkFinding(
       "infra.stalepgi", "Stale Process Group Instances",
-      `${stalePgis} process group instance${stalePgis !== 1 ? "s" : ""} last seen more than 7 days ago.`,
+      `${stalePgis} process group instance${stalePgis !== 1 ? "s" : ""} last seen more than 30 days ago.`,
       stalePgis > 50 ? "warning" : "info",
       "Review stale PGIs — decommissioned processes accumulate over time and inflate entity counts.",
-      `${stalePgis} stale PGIs (last seen > 7 days)`
+      `${stalePgis} stale PGIs (last seen > 30 days)`
     ) : undefined
   );
 

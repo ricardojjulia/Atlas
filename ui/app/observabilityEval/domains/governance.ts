@@ -5,14 +5,15 @@ import { mkProbe, mkFinding, buildDomain } from "../domainUtils";
 import type { ObsDomainResult } from "../types";
 
 export async function runGovernanceDomain(): Promise<ObsDomainResult> {
-  const [auditR, settingsResult, tokenSummary] = await Promise.all([
+  const [auditR, segmentsR, settingsResult, tokenSummary] = await Promise.all([
     // Grail stores audit events in the audit.logs table; user field is user.id in the audit log schema
-    runDql("fetch audit.logs, from:now()-7d | summarize total = count(), uniqueUsers = countDistinct(user.id)"),
+    // audit.logs schema uses flat `user` field — not nested `user.id`
+    runDql("fetch audit.logs, from:now()-7d | summarize total = count(), uniqueUsers = countDistinct(user)"),
+    // Platform segments are managed via Grail's dt.system.segments table, not Settings 2.0
+    runDql("fetch dt.system.segments | summarize count()"),
     getSettingsObjectCounts([
       "builtin:management-zones",
       "builtin:ownership.teams",
-      // builtin:segment — platform segments schema; may vary across DT versions
-      "builtin:segment",
     ]),
     getTokenSummary(),
   ]);
@@ -21,17 +22,18 @@ export async function runGovernanceDomain(): Promise<ObsDomainResult> {
   const auditUsers = toNum(auditR.records[0]?.["uniqueUsers"] ?? auditR.records[0]?.["uniqueusers"] ?? 0);
   const mgmtZones = settingsResult.get("builtin:management-zones") ?? 0;
   const ownershipTeams = settingsResult.get("builtin:ownership.teams") ?? 0;
-  const segments = settingsResult.get("builtin:segment") ?? 0;
+  const segments = toNum(segmentsR.records[0]?.["count()"]);
   const totalTokens = tokenSummary?.totalCount ?? null;
-  const disabledTokens = totalTokens != null
-    ? (totalTokens - (tokenSummary?.enabledCount ?? totalTokens))
+  // Guard undefined enabledCount — fallback ?? totalTokens would silently report 0 disabled
+  const disabledTokens = totalTokens != null && tokenSummary?.enabledCount != null
+    ? totalTokens - tokenSummary.enabledCount
     : null;
-  const disabledPct = totalTokens != null && totalTokens > 0
-    ? Math.round(((disabledTokens ?? 0) / totalTokens) * 100)
+  const disabledPct = totalTokens != null && totalTokens > 0 && disabledTokens != null
+    ? Math.round((disabledTokens / totalTokens) * 100)
     : 0;
 
-  // P1: Management zones
-  const p1Score = (mgmtZones ?? 0) >= 5 ? 100 : (mgmtZones ?? 0) >= 2 ? 70 : (mgmtZones ?? 0) === 1 ? 50 : 0;
+  // P1: Management zones — 1 zone = real partial, not unknown (avoid sentinel=50)
+  const p1Score = (mgmtZones ?? 0) >= 5 ? 100 : (mgmtZones ?? 0) >= 2 ? 70 : (mgmtZones ?? 0) === 1 ? 55 : 0;
   const p1 = mkProbe(
     "gov.mgmtzones", "Management zones configured", 0.20, p1Score,
     `${mgmtZones ?? 0} management zone${mgmtZones !== 1 ? "s" : ""} configured`,
@@ -51,7 +53,7 @@ export async function runGovernanceDomain(): Promise<ObsDomainResult> {
   );
 
   // P2: Ownership teams
-  const p2Score = (ownershipTeams ?? 0) >= 5 ? 100 : (ownershipTeams ?? 0) >= 2 ? 70 : (ownershipTeams ?? 0) === 1 ? 50 : 0;
+  const p2Score = (ownershipTeams ?? 0) >= 5 ? 100 : (ownershipTeams ?? 0) >= 2 ? 70 : (ownershipTeams ?? 0) === 1 ? 55 : 0;
   const p2 = mkProbe(
     "gov.ownership", "Ownership teams configured", 0.20, p2Score,
     `${ownershipTeams ?? 0} ownership team${ownershipTeams !== 1 ? "s" : ""} defined`,
@@ -66,7 +68,7 @@ export async function runGovernanceDomain(): Promise<ObsDomainResult> {
   );
 
   // P3: Platform segments
-  const p3Score = (segments ?? 0) >= 5 ? 100 : (segments ?? 0) >= 2 ? 70 : (segments ?? 0) === 1 ? 50 : 0;
+  const p3Score = (segments ?? 0) >= 5 ? 100 : (segments ?? 0) >= 2 ? 70 : (segments ?? 0) === 1 ? 55 : 0;
   const p3 = mkProbe(
     "gov.segments", "Platform segments configured", 0.20, p3Score,
     `${segments ?? 0} platform segment${segments !== 1 ? "s" : ""} defined`,
@@ -80,11 +82,11 @@ export async function runGovernanceDomain(): Promise<ObsDomainResult> {
   );
 
   // P4: API token hygiene
-  const p4Score = totalTokens == null ? 50
+  const p4Score = totalTokens == null || disabledTokens == null ? 50
     : totalTokens === 0 ? 100
     : disabledPct <= 10 ? 100
     : disabledPct <= 25 ? 80
-    : disabledPct <= 50 ? 50
+    : disabledPct <= 50 ? 30   // real governance gap, not unknown — avoid sentinel collision
     : 0;
   const p4 = mkProbe(
     "gov.tokens", "API token hygiene", 0.20, p4Score,

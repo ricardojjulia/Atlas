@@ -26,7 +26,8 @@ export async function runDql(query: string): Promise<QueryResult> {
       }
     }
 
-    if (state === "FAILED" || state === "CANCELLED") {
+    // RUNNING here means the poll loop exhausted — treat as timeout, not "no data"
+    if (state === "FAILED" || state === "CANCELLED" || state === "RUNNING") {
       return { records: [], scannedBytes: 0, scannedRecords: 0 };
     }
 

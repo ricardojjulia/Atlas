@@ -54,4 +54,5 @@ export interface ObsFullEvalResults {
   roadmap: RoadmapItem[];
   scannedRecords: number;
   scannedBytes: number;
+  runAt: number; // Date.now() at evaluation completion
 }

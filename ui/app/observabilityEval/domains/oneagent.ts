@@ -9,9 +9,10 @@ export async function runOneAgentDomain(): Promise<ObsDomainResult> {
     runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | summarize hostCount = count(), by:{monitoringMode}`),
     // Filter null agentVersion rows — if installerVersion field is absent, all return null → shows 0 versions (unknown)
     runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | fieldsAdd agentVersion = installerVersion | filter isNotNull(agentVersion) | summarize hostCount = count(), by:{agentVersion} | sort hostCount desc`),
-    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | filter isNull(dt.host_group.id) OR dt.host_group.id == "" | summarize count()`),
+    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | filter isNull(dt.host_group.id) or dt.host_group.id == "" | summarize count()`),
     runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | summarize count()`),
-    runDql("fetch dt.entity.host | filter isMonitoringCandidate == true | summarize count()"),
+    // Staleness filter removes decommissioned hosts that were once candidates but no longer exist
+    runDql("fetch dt.entity.host | filter isMonitoringCandidate == true and toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
     runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | fieldsAdd networkZone | summarize hostCount = count(), by:{networkZone} | sort hostCount desc`),
   ]);
 
@@ -39,7 +40,8 @@ export async function runOneAgentDomain(): Promise<ObsDomainResult> {
 
   // P2: Agent version uniformity (null versions filtered in query — if 0 records, installerVersion field unavailable → unknown)
   const distinctVersions = versionR.records.length;
-  const p2Score = distinctVersions === 0 ? 50 : distinctVersions <= 2 ? 100 : distinctVersions <= 5 ? 60 : 0;
+  // Tiered: 6–10 versions = messy but real partial compliance, not total failure
+  const p2Score = distinctVersions === 0 ? 50 : distinctVersions <= 2 ? 100 : distinctVersions <= 5 ? 70 : distinctVersions <= 10 ? 40 : 0;
   const p2 = mkProbe(
     "oa.versions", "Agent version uniformity", 0.20, p2Score,
     `${distinctVersions} distinct OneAgent version${distinctVersions !== 1 ? "s" : ""} detected`,
@@ -72,7 +74,8 @@ export async function runOneAgentDomain(): Promise<ObsDomainResult> {
 
   // P4: Monitoring candidates
   const candidates = toNum(candidatesR.records[0]?.["count()"]);
-  const p4Score = candidates === 0 ? 100 : candidates <= 5 ? 60 : 0;
+  // >5 unmonitored candidates = partial concern (not complete failure) — aligns with info finding severity
+  const p4Score = candidates === 0 ? 100 : candidates <= 5 ? 60 : candidates <= 20 ? 30 : 0;
   const p4 = mkProbe(
     "oa.candidates", "Monitoring candidates", 0.15, p4Score,
     `${candidates} unmonitored host candidate${candidates !== 1 ? "s" : ""} detected`,

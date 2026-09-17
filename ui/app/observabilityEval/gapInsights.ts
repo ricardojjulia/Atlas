@@ -16,7 +16,7 @@ interface GapRule {
   severity: FindingSeverity;
 }
 
-// ── 20 cross-domain correlation rules ─────────────────────────────────────────
+// ── 26 cross-domain correlation rules ─────────────────────────────────────────
 //
 // Threshold conventions:
 //   strongThreshold: 75 — used for core platform capabilities (OneAgent, APM, Davis, Logs, Infra)
@@ -219,11 +219,51 @@ const GAP_RULES: GapRule[] = [
     severity: "info",
   },
   {
+    id: "gap-infra-logs",
+    title: "Infrastructure covered but log collection is missing",
+    description: "Infrastructure Coverage is solid — hosts, services, and processes are monitored at the metric level. But Log Management is weak, meaning application and system logs are not flowing to Grail.",
+    recommendation: "Configure OneAgent log monitoring for all host groups, or deploy an OpenTelemetry log collector. Enable automatic log detection in OneAgent host monitoring settings.",
+    detail: "Impact: infrastructure anomalies are detected but troubleshooting requires manual SSH to read logs — increasing MTTR and reducing root-cause accuracy.",
+    strongDomain: "infra", strongThreshold: 75,
+    weakDomain: "logs", weakThreshold: 50,
+    severity: "warning",
+  },
+  {
+    id: "gap-dem-governance",
+    title: "User experience tracked but no ownership structure for monitored apps",
+    description: "Digital Experience monitoring is active — user actions and satisfaction scores are flowing. But Platform Governance is weak, meaning there are no management zones or ownership teams to scope alerts, assign SLO accountability, or route experience issues to the right teams.",
+    recommendation: "Create management zones per application or business unit. Assign RUM-monitored applications to ownership teams. Define segments so teams get filtered experience dashboards.",
+    detail: "Impact: experience data is available but unaccountable — no team owns SLO breaches or knows they are responsible for a degraded user journey.",
+    strongDomain: "dem", strongThreshold: 75,
+    weakDomain: "governance", weakThreshold: 50,
+    severity: "info",
+  },
+  {
+    id: "gap-oneagent-automation",
+    title: "Strong agent coverage but no automated response",
+    description: "OneAgent deployment is solid — hosts, processes, and services are actively monitored. But Automation coverage is low, meaning infrastructure events and health changes require manual response rather than programmatic remediation.",
+    recommendation: "Build AutomationEngine workflows triggered by OneAgent host health events, process restarts, and deployment markers. Start with auto-restart for failed services and capacity scaling for resource exhaustion.",
+    detail: "Impact: OneAgent detects issues in real time, but without automation the mean time to remediate is bounded by human availability.",
+    strongDomain: "oneagent", strongThreshold: 75,
+    weakDomain: "automation", weakThreshold: 50,
+    severity: "warning",
+  },
+  {
+    id: "gap-governance-bizobs",
+    title: "Governance structure defined but business KPIs are unowned",
+    description: "Platform Governance is mature — management zones, ownership teams, and segments are defined. But Business Observability is weak, meaning business-critical transactions and KPIs are not assigned to the ownership structures already in place.",
+    recommendation: "Assign BizEvent sources to ownership teams. Create business KPI dashboards scoped by management zone. Use platform segments to give business stakeholders filtered views of their metrics.",
+    detail: "Impact: governance structures exist but are only applied to technical monitoring — business outcomes remain unmeasured and unaccountable.",
+    strongDomain: "governance", strongThreshold: 75,
+    weakDomain: "bizobs", weakThreshold: 50,
+    severity: "info",
+  },
+  {
     id: "gap-logs-governance",
     title: "Log pipeline active but logs are not scoped to teams",
     description: "Log Management is strong — OpenPipeline and Grail buckets are configured. But Platform Governance is weak, meaning logs are not organized by ownership or management zone, making it hard for teams to filter to their own logs.",
     recommendation: "Add team and service metadata enrichment in OpenPipeline. Create Grail buckets scoped to management zones. Use platform segments so teams can apply a filter and see only their relevant log streams.",
-    detail: "Impact: all logs are in a shared pool — every team queries everything, increasing cognitive load and DPS cost.",
+    detail: "Impact: all logs are in a shared pool — every team queries everything, increasing cognitive load and Grail storage cost.",
     strongDomain: "logs", strongThreshold: 70,
     weakDomain: "governance", weakThreshold: 50,
     severity: "info",
@@ -250,7 +290,8 @@ export function evaluateGaps(results: ObsFullEvalResults): Finding[] {
         title: rule.title,
         description: rule.description,
         recommendation: rule.recommendation,
-        detail: `${strongDomain?.name ?? rule.strongDomain}: ${strongScore}/100  ·  ${weakDomain?.name ?? rule.weakDomain}: ${weakScore}/100`,
+        // Combine score context with the authored impact text so both are visible in the UI
+        detail: `${strongDomain?.name ?? rule.strongDomain}: ${strongScore}/100  ·  ${weakDomain?.name ?? rule.weakDomain}: ${weakScore}/100  |  ${rule.detail}`,
         severity: rule.severity,
       });
     }

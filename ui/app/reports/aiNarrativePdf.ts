@@ -66,15 +66,15 @@ export function buildAiNarrativePdf(markdown: string, meta: AiNarrativeMeta): js
   const W = 210, H = 297, M = 15, CW = W - 2 * M;
   let y = 0;
 
-  // Design tokens
-  const BG: [number,number,number]       = [10, 12, 30];
-  const SURF: [number,number,number]     = [18, 22, 55];
-  const BLUE: [number,number,number]     = [20, 100, 255];
-  const BLUE_DIM: [number,number,number] = [40, 70, 160];
-  const TEAL: [number,number,number]     = [0, 195, 155];
-  const TXT1: [number,number,number]     = [228, 232, 255];
-  const TXT2: [number,number,number]     = [120, 130, 175];
-  const TXT3: [number,number,number]     = [65, 75, 115];
+  // Design tokens — clean white professional theme
+  const BG: [number,number,number]       = [255, 255, 255];   // page white
+  const SURF: [number,number,number]     = [246, 248, 253];   // card / alt-row tint
+  const BLUE: [number,number,number]     = [0, 100, 210];     // Dynatrace brand blue
+  const BLUE_DIM: [number,number,number] = [75, 125, 190];    // muted blue accents
+  const TEAL: [number,number,number]     = [0, 148, 115];     // recommendation / pass
+  const TXT1: [number,number,number]     = [18, 24, 45];      // headlines
+  const TXT2: [number,number,number]     = [62, 74, 105];     // body text
+  const TXT3: [number,number,number]     = [132, 145, 172];   // labels, captions
 
   const paintBg = () => { pdf.setFillColor(...BG); pdf.rect(0, 0, W, H, "F"); };
   const addRunningHeader = () => {
@@ -98,12 +98,12 @@ export function buildAiNarrativePdf(markdown: string, meta: AiNarrativeMeta): js
 
   // ── Hero band ──
   const HERO_H = 52;
-  pdf.setFillColor(...SURF);
+  pdf.setFillColor(...BLUE);                          // brand-blue hero band
   pdf.rect(0, 0, W, HERO_H, "F");
-  pdf.setFillColor(...BLUE);
+  pdf.setFillColor(...TEAL);                          // teal left accent
   pdf.rect(0, 0, 5, HERO_H, "F");
-  // Decorative diagonals
-  pdf.setDrawColor(...BLUE_DIM); pdf.setLineWidth(0.25);
+  // Decorative diagonals — subtle lighter blue on blue background
+  pdf.setDrawColor(20, 118, 232); pdf.setLineWidth(0.25);
   for (let di = 0; di < 6; di++) {
     const ox = W - 55 + di * 10;
     pdf.line(ox, 0, ox + HERO_H * 0.55, HERO_H);
@@ -116,20 +116,20 @@ export function buildAiNarrativePdf(markdown: string, meta: AiNarrativeMeta): js
   pdf.text("ATLAS", M + 4, 24);
   // Smart Report label
   pdf.setFontSize(7.5); pdf.setFont("helvetica", "normal");
-  pdf.setTextColor(...BLUE_DIM);
+  pdf.setTextColor(200, 225, 255);                    // light on blue hero
   pdf.text("Smart Report  ·  by Dynatrace", M + 4, 33);
   // Separator
-  pdf.setDrawColor(...BLUE); pdf.setLineWidth(0.6);
+  pdf.setDrawColor(255, 255, 255); pdf.setLineWidth(0.6);   // white separator on blue
   pdf.line(M + 4, 38, M + 4 + 70, 38);
   pdf.setLineWidth(0.2);
 
   // Title (right side of hero)
   pdf.setFontSize(7); pdf.setFont("helvetica", "bold");
-  pdf.setTextColor(...BLUE_DIM);
+  pdf.setTextColor(200, 225, 255);                    // light on blue hero
   pdf.text("REPORT", W - M, 18, { align: "right" });
   const titleLines = pdf.splitTextToSize(clean(meta.title), 80);
   pdf.setFontSize(11); pdf.setFont("helvetica", "bold");
-  pdf.setTextColor(...TXT1);
+  pdf.setTextColor(255, 255, 255);                    // white title text on blue hero
   pdf.text(titleLines, W - M, 27, { align: "right" });
 
   y = HERO_H + 10;
@@ -212,7 +212,7 @@ export function buildAiNarrativePdf(markdown: string, meta: AiNarrativeMeta): js
     pdf.setTextColor(...TXT3);
     pdf.text(`ATLAS  ·  ${meta.tenant}  ·  ${meta.date}`, M, H - 4);
     pdf.text(`Page ${i} / ${pages}`, W - M, H - 4, { align: "right" });
-    pdf.setTextColor(200, 160, 60);
+    pdf.setTextColor(150, 110, 20);                     // darker amber — readable on light footer
     pdf.text("Generated with Davis CoPilot - review before sharing.", W / 2, H - 4, { align: "center" });
   }
 

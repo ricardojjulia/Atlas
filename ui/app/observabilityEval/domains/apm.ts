@@ -1,4 +1,4 @@
-import { runDql, toNum, toStr } from "../queryRunner";
+import { runDql, toNum } from "../queryRunner";
 import { mkProbe, mkFinding, buildDomain } from "../domainUtils";
 import type { ObsDomainResult } from "../types";
 
@@ -6,21 +6,26 @@ export async function runApmDomain(segFilter: string): Promise<ObsDomainResult> 
   const sf = segFilter ? `| filter filterSegments("${segFilter}")` : "";
 
   const [spanSvcR, spanQualityR, cloudFuncR, azureFuncR, faasSvcR, svcMethodR, topSvcR, totalSvcR] = await Promise.all([
-    runDql(`fetch spans, from:now()-24h\n${sf}\n| filter isNotNull(dt.entity.service)\n| summarize active = countDistinct(dt.entity.service)`),
-    runDql(`fetch spans, from:now()-30d\n${sf}\n| summarize total = count(), withDbStatement = countIf(isNotNull(db.statement)), withServiceName = countIf(isNotNull(service.name))`),
+    // coalesce captures both OneAgent services (dt.entity.service) and OTel-only services (service.name)
+    runDql(`fetch spans, from:now()-24h\n${sf}\n| fieldsAdd svcId = coalesce(dt.entity.service, service.name)\n| filter isNotNull(svcId)\n| summarize active = countDistinct(svcId)`),
+    // db.system indicates a DB span exists; db.statement is the captured SQL text
+    runDql(`fetch spans, from:now()-30d\n${sf}\n| summarize total = count(), withDbStatement = countIf(isNotNull(db.statement)), withDbSystem = countIf(isNotNull(db.system)), withServiceName = countIf(isNotNull(service.name))`),
     // Filter to recently-seen functions to match the 7d span window below
     runDql("fetch dt.entity.aws_lambda_function | filter toTimestamp(lastSeenTms) > now() - 7d | summarize count()"),
     runDql("fetch dt.entity.azure_function_app | filter toTimestamp(lastSeenTms) > now() - 7d | summarize count()"),
     runDql(`fetch spans, from:now()-7d\n${sf}\n| filter isNotNull(faas.name) or isNotNull(faas.id)\n| summarize instrumented = countDistinct(coalesce(faas.name, faas.id))`),
-    runDql("fetch dt.entity.service_method | summarize count()"),
+    // 30d staleness filter prevents stale methods from inflating count and suppressing OTel detection
+    runDql("fetch dt.entity.service_method | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
     runDql(`fetch spans, from:now()-24h\n${sf}\n| fieldsAdd svc = coalesce(dt.entity.service, service.name)\n| filter isNotNull(svc)\n| summarize total = count(), errors = countIf(otel.status_code == "ERROR" or error == true or isNotNull(exception.type)), by:{svc}\n| fieldsAdd errorRate = round(toDouble(errors) / toDouble(total) * 100.0, 1)\n| sort total desc\n| limit 20`),
-    runDql("fetch dt.entity.service | summarize count()"),
+    // 30d staleness filter aligns with infra.ts and prevents denominator inflation from decommissioned services
+    runDql("fetch dt.entity.service | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
   ]);
 
   // P1: Distributed tracing coverage — ratio of services with active traces vs total detected services
   const activeSvcsWithTraces = toNum(spanSvcR.records[0]?.["active"]);
   const totalSvcs = toNum(totalSvcR.records[0]?.["count()"]);
-  const tracingCovPct = totalSvcs > 0 ? Math.round((activeSvcsWithTraces / totalSvcs) * 100) : 0;
+  // Cap at 100: OTel services (coalesce on service.name) can exceed the OneAgent entity count denominator
+  const tracingCovPct = totalSvcs > 0 ? Math.min(100, Math.round((activeSvcsWithTraces / totalSvcs) * 100)) : 0;
   const p1Score = totalSvcs === 0 ? 50
     : activeSvcsWithTraces === 0 ? 0
     : tracingCovPct >= 80 ? 100
@@ -52,7 +57,8 @@ export async function runApmDomain(segFilter: string): Promise<ObsDomainResult> 
   const highErrorSvcs = topSvcs.filter(r => toNum(r["errorRate"]) > 5).length;
   const totalTopSvcs = topSvcs.length;
   const errorHealthPct = totalTopSvcs > 0 ? Math.round(((totalTopSvcs - highErrorSvcs) / totalTopSvcs) * 100) : 100;
-  const p2Score = totalTopSvcs === 0 ? 50 : highErrorSvcs === 0 ? 100 : errorHealthPct >= 80 ? errorHealthPct : Math.round(errorHealthPct * 0.7);
+  // Math.max(51,...) prevents Math.round(71×0.7)=50 sentinel collision at errorHealthPct=71-72
+  const p2Score = totalTopSvcs === 0 ? 50 : highErrorSvcs === 0 ? 100 : errorHealthPct >= 80 ? errorHealthPct : Math.max(51, Math.round(errorHealthPct * 0.7));
   const p2 = mkProbe(
     "apm.errorrate", "Service error rate health", 0.15, p2Score,
     `${highErrorSvcs} of top ${totalTopSvcs} services have error rate > 5%`,
@@ -73,7 +79,8 @@ export async function runApmDomain(segFilter: string): Promise<ObsDomainResult> 
   const instrumentedFuncs = toNum(faasSvcR.records[0]?.["instrumented"]);
   const funcGap = Math.max(0, totalCloudFuncs - instrumentedFuncs);
   const funcCovPct = totalCloudFuncs > 0 ? Math.round((instrumentedFuncs / totalCloudFuncs) * 100) : 100;
-  const p3Score = totalCloudFuncs === 0 ? 100 : funcCovPct >= 80 ? 100 : funcCovPct >= 50 ? funcCovPct : Math.round(funcCovPct * 0.5);
+  // Math.max(51,...) prevents exact-50% coverage colliding with the unknown sentinel
+  const p3Score = totalCloudFuncs === 0 ? 100 : funcCovPct >= 80 ? 100 : funcCovPct >= 50 ? Math.max(51, funcCovPct) : Math.round(funcCovPct * 0.5);
   const p3 = mkProbe(
     "apm.cloudfuncs", "Cloud function instrumentation", 0.15, p3Score,
     totalCloudFuncs === 0
@@ -89,42 +96,65 @@ export async function runApmDomain(segFilter: string): Promise<ObsDomainResult> 
     ) : undefined
   );
 
-  // P4: DB statement capture (checks db.statement — the actual SQL/query text, not just db.system presence)
+  // P4: DB statement capture — proportional against db.system spans (the actual DB calls), not total span volume
   const spanTotal = toNum(spanQualityR.records[0]?.["total"]);
   const spanWithDb = toNum(spanQualityR.records[0]?.["withDbStatement"]);
-  const dbPct = spanTotal > 0 ? Math.round((spanWithDb / spanTotal) * 100) : 0;
-  const p4Score = spanTotal === 0 ? 50 : spanWithDb > 0 ? 100 : 30;
+  const spanWithDbSystem = toNum(spanQualityR.records[0]?.["withDbSystem"]);
+  const dbCapturePct = spanWithDbSystem > 0 ? Math.round((spanWithDb / spanWithDbSystem) * 100) : 100;
+  const p4Score = spanTotal === 0 ? 50
+    : spanWithDbSystem === 0 ? 50   // no DB calls detected — N/A
+    : dbCapturePct >= 80 ? 100
+    : dbCapturePct >= 50 ? 70
+    : dbCapturePct > 0 ? 50
+    : 30;
   const p4 = mkProbe(
     "apm.dbcapture", "Database statement capture", 0.15, p4Score,
-    spanTotal === 0 ? "No span data available" : `${spanWithDb.toLocaleString()} of ${spanTotal.toLocaleString()} spans have db.statement attribute (${dbPct}%)`,
-    "> 0 spans with db.statement captured",
-    spanTotal > 0 && spanWithDb === 0 ? mkFinding(
-      "apm.dbcapture", "No Database Statement Capture",
-      "No spans include the db.statement attribute — SQL query text is not being captured for database call tracing.",
-      "info",
+    spanTotal === 0 ? "No span data available"
+      : spanWithDbSystem === 0 ? "No database spans detected (N/A)"
+      : `${spanWithDb.toLocaleString()} of ${spanWithDbSystem.toLocaleString()} DB spans have db.statement captured (${dbCapturePct}%)`,
+    "≥ 80% of DB spans with db.statement captured",
+    spanWithDbSystem > 0 && dbCapturePct < 80 ? mkFinding(
+      "apm.dbcapture", "Incomplete Database Statement Capture",
+      `Only ${dbCapturePct}% of database spans include the db.statement attribute — SQL query text is missing for ${spanWithDbSystem - spanWithDb} DB calls.`,
+      dbCapturePct < 50 ? "warning" : "info",
       "Enable OneAgent database statement capture in service detection settings, or ensure OTel instrumentation sets the db.statement span attribute.",
-      "0 spans with db.statement in 30d window"
+      `${spanWithDb.toLocaleString()} captured | ${spanWithDbSystem.toLocaleString()} total DB spans`
     ) : undefined
   );
 
-  // P5: Service method instrumentation
+  // P5: Service method instrumentation — OTel-only envs don't create dt.entity.service_method entities
+  const spanWithSvcName = toNum(spanQualityR.records[0]?.["withServiceName"]);
   const svcMethods = toNum(svcMethodR.records[0]?.["count()"]);
-  const p5Score = svcMethods >= 10 ? 100 : svcMethods >= 1 ? 70 : 30;
+  const isOtelOnly = spanTotal > 0 && spanWithSvcName === spanTotal && svcMethods === 0;
+  const p5Score = isOtelOnly ? 50   // OTel-only: service_method entities are not populated — N/A
+    : svcMethods >= 10 ? 100
+    : svcMethods >= 1 ? 70
+    : activeSvcsWithTraces > 0 ? 30   // OneAgent services traced but no method capture
+    : 50;
   const p5 = mkProbe(
     "apm.svcmethods", "Service method instrumentation", 0.15, p5Score,
-    `${svcMethods.toLocaleString()} service method${svcMethods !== 1 ? "s" : ""} captured`,
+    isOtelOnly
+      ? "OTel-only environment — service_method entities not applicable"
+      : `${svcMethods.toLocaleString()} service method${svcMethods !== 1 ? "s" : ""} captured`,
     "≥ 10 service methods instrumented"
   );
 
-  // P6: OTel service.name quality
-  const spanWithSvcName = toNum(spanQualityR.records[0]?.["withServiceName"]);
+  // P6: OTel service.name quality — guard for pure OneAgent environments where service.name is not expected
+  // If all traces come from OneAgent (dt.entity.service set, service.name absent) this is N/A, not a failure
   const svcNamePct = spanTotal > 0 ? Math.round((spanWithSvcName / spanTotal) * 100) : 100;
-  const p6Score = spanTotal === 0 ? 50 : svcNamePct >= 95 ? 100 : svcNamePct >= 80 ? svcNamePct : Math.round(svcNamePct * 0.7);
+  const isOneAgentOnly = spanTotal > 0 && spanWithSvcName === 0 && activeSvcsWithTraces > 0;
+  const p6Score = spanTotal === 0 ? 50
+    : isOneAgentOnly ? 50   // pure OneAgent environment — service.name is an OTel concept, N/A here
+    : svcNamePct >= 95 ? 100
+    : svcNamePct >= 80 ? svcNamePct
+    : Math.round(svcNamePct * 0.7);
   const p6 = mkProbe(
     "apm.svcname", "OTel service.name coverage", 0.20, p6Score,
-    spanTotal === 0 ? "No span data to evaluate" : `${svcNamePct}% of spans have service.name attribute`,
+    spanTotal === 0 ? "No span data to evaluate"
+      : isOneAgentOnly ? "Pure OneAgent environment — service.name attribute not applicable"
+      : `${svcNamePct}% of spans have service.name attribute`,
     "≥ 95% of spans include service.name",
-    svcNamePct < 95 && spanTotal > 0 ? mkFinding(
+    !isOneAgentOnly && svcNamePct < 95 && spanTotal > 0 ? mkFinding(
       "apm.svcname", "Missing service.name Attribute on Spans",
       `${100 - svcNamePct}% of spans are missing the service.name attribute, reducing trace attribution accuracy.`,
       svcNamePct < 80 ? "warning" : "info",

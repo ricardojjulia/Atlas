@@ -5,23 +5,36 @@ import type { ObsDomainResult } from "../types";
 
 export async function runDavisDomain(): Promise<ObsDomainResult> {
   const [problemsR, davisEventsR, sloR, settingsCounts, settingsEnabled] = await Promise.all([
-    runDql("fetch events, from:now()-30d | filter event.kind == \"DAVIS_PROBLEM\" | summarize count()"),
+    // countDistinct on problem.id to avoid counting open/update/close state transitions as separate problems
+    runDql("fetch events, from:now()-30d | filter event.kind == \"DAVIS_PROBLEM\" | summarize count = countDistinct(dt.davis.problem.id)"),
     runDql("fetch events, from:now()-30d | filter event.kind == \"DAVIS_EVENT\" | summarize total = count()"),
     runDql("fetch dt.entity.service_level_objective | summarize count()"),
     getSettingsObjectCounts([
-      "builtin:davis.anomaly-detectors",
+      // builtin:anomaly-detection.metric-events is the correct schema for custom metric anomaly rules
+      "builtin:anomaly-detection.metric-events",
+      "builtin:anomaly-detection.hosts",
+      "builtin:anomaly-detection.services",
       "builtin:alerting.maintenance-window",
       "builtin:problem.notifications",
+      // Gen3 SLOs managed via Settings 2.0 (separate from legacy entity-based SLOs)
+      "builtin:monitoring.slos",
     ]),
     getSettingsEnabledCounts([
       "builtin:alerting.profile",
     ]),
   ]);
 
-  const problemCount = toNum(problemsR.records[0]?.["count()"]);
+  // countDistinct returns field "count" not "count()"
+  const problemCount = toNum(problemsR.records[0]?.["count"] ?? problemsR.records[0]?.["count()"]);
   const davisEventTotal = toNum(davisEventsR.records[0]?.["total"]);
-  const sloCount = toNum(sloR.records[0]?.["count()"]);
-  const davisDetectors = settingsCounts.get("builtin:davis.anomaly-detectors") ?? 0;
+  const entitySloCount = toNum(sloR.records[0]?.["count()"]);
+  const settings2SloCount = settingsCounts.get("builtin:monitoring.slos") ?? 0;
+  // Use the larger of legacy entity-based SLOs and Gen3 Settings 2.0 SLOs
+  const sloCount = Math.max(entitySloCount, settings2SloCount);
+  // Combine all custom anomaly detector schemas for a compound coverage signal
+  const davisDetectors = (settingsCounts.get("builtin:anomaly-detection.metric-events") ?? 0)
+    + (settingsCounts.get("builtin:anomaly-detection.hosts") ?? 0)
+    + (settingsCounts.get("builtin:anomaly-detection.services") ?? 0);
   const maintenanceWindows = settingsCounts.get("builtin:alerting.maintenance-window") ?? 0;
   const notificationIntegrations = settingsCounts.get("builtin:problem.notifications") ?? 0;
   const alertingProfiles = settingsEnabled.get("builtin:alerting.profile");
@@ -30,9 +43,10 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
   // P1: Custom anomaly detector rules (supplements built-in Davis AI baselines — 0 custom rules is normal and valid)
   // Note: builtin:davis.anomaly-detectors counts user-defined custom threshold rules, NOT built-in Davis AI detection.
   // A tenant with 0 custom detectors may still have fully functional built-in Davis AI (evidenced by P2 events).
-  const p1Score = (davisDetectors ?? 0) >= 5 ? 100 : (davisDetectors ?? 0) >= 2 ? 80 : (davisDetectors ?? 0) === 1 ? 70 : 50;
+  // 0 and 1 detectors both score 70 (valid but below best practice); simplify dead ternary
+  const p1Score = (davisDetectors ?? 0) >= 5 ? 100 : (davisDetectors ?? 0) >= 2 ? 80 : 70;
   const p1 = mkProbe(
-    "davis.detectors", "Custom anomaly detector rules", 0.20, p1Score,
+    "davis.detectors", "Custom anomaly detector rules", 0.20, p1Score,  // weight: 0.20
     `${davisDetectors ?? 0} custom anomaly detector rule${davisDetectors !== 1 ? "s" : ""} configured (built-in Davis AI baselines are always active)`,
     "≥ 2 custom anomaly detector rules for fine-tuned alerting",
     (davisDetectors ?? 0) === 0 ? mkFinding(
@@ -44,10 +58,13 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P2: Davis AI generating events (active problem detection)
-  const p2Score = davisEventTotal > 100 ? 100 : davisEventTotal > 0 ? 80 : 0;
+  // P2: Davis AI generating events — tiered: 0=off/no data, low volume, healthy, high volume
+  const p2Score = davisEventTotal === 0 ? 0
+    : davisEventTotal < 100 ? 60
+    : davisEventTotal < 1000 ? 80
+    : 100;
   const p2 = mkProbe(
-    "davis.events", "Davis AI event activity", 0.15, p2Score,
+    "davis.events", "Davis AI event activity", 0.14, p2Score,
     `${davisEventTotal.toLocaleString()} Davis events detected in last 30 days`,
     "> 0 Davis events (AI is actively evaluating)",
     davisEventTotal === 0 ? mkFinding(
@@ -60,9 +77,10 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
 
   // P3: Problem count trend (open problems as health signal)
   // Guard: if Davis is not generating events at all (P2 = 0), zero problems means Davis is off, not that the env is healthy
-  const p3Score = davisEventTotal === 0 ? 50 : problemCount === 0 ? 100 : problemCount < 10 ? 90 : problemCount < 50 ? 70 : problemCount < 200 ? 50 : 30;
+  // 50–199 problems = noisy but real partial state, not "unknown" — avoid sentinel collision
+  const p3Score = davisEventTotal === 0 ? 50 : problemCount === 0 ? 100 : problemCount < 10 ? 90 : problemCount < 50 ? 70 : problemCount < 200 ? 40 : 30;
   const p3 = mkProbe(
-    "davis.problems", "Open problem count", 0.15, p3Score,
+    "davis.problems", "Open problem count", 0.14, p3Score,
     `${problemCount.toLocaleString()} Davis problem${problemCount !== 1 ? "s" : ""} in last 30 days`,
     "Fewer active problems indicates healthy environment"
   );
@@ -70,7 +88,7 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
   // P4: Alerting profiles (Gen3) — routes Davis problems to the right teams
   const p4Score = enabledAlertingProfiles >= 3 ? 100 : enabledAlertingProfiles >= 1 ? 70 : 0;
   const p4 = mkProbe(
-    "davis.alerting", "Alerting profiles configured", 0.18, p4Score,
+    "davis.alerting", "Alerting profiles configured", 0.17, p4Score,
     `${enabledAlertingProfiles} enabled alerting profile${enabledAlertingProfiles !== 1 ? "s" : ""}`,
     "≥ 3 alerting profiles configured",
     enabledAlertingProfiles === 0 ? mkFinding(
@@ -90,7 +108,7 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
   // P5: SLOs defined — reliability contracts backed by Davis
   const p5Score = sloCount >= 10 ? 100 : sloCount >= 5 ? 80 : sloCount >= 1 ? 60 : 0;
   const p5 = mkProbe(
-    "davis.slos", "Service Level Objectives defined", 0.14, p5Score,
+    "davis.slos", "Service Level Objectives defined", 0.13, p5Score,
     `${sloCount} SLO${sloCount !== 1 ? "s" : ""} defined`,
     "≥ 10 SLOs defined for critical services",
     sloCount === 0 ? mkFinding(
@@ -107,8 +125,11 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P6: Maintenance windows — absence causes false-positive Davis problems during planned maintenance
-  const p6Score = (maintenanceWindows ?? 0) >= 1 ? 100 : 0;
+  // P6: Maintenance windows — proportional: 0=critical gap, 1=basic, 2-4=good, ≥5=mature
+  const p6Score = maintenanceWindows === 0 ? 0
+    : maintenanceWindows === 1 ? 60
+    : maintenanceWindows < 5 ? 80
+    : 100;
   const p6 = mkProbe(
     "davis.maintenance", "Maintenance windows configured", 0.10, p6Score,
     `${maintenanceWindows ?? 0} maintenance window${maintenanceWindows !== 1 ? "s" : ""} configured`,
@@ -125,7 +146,7 @@ export async function runDavisDomain(): Promise<ObsDomainResult> {
   // P7: Notification integrations — Davis problems must reach humans to be actionable
   const p7Score = (notificationIntegrations ?? 0) >= 2 ? 100 : (notificationIntegrations ?? 0) === 1 ? 70 : 0;
   const p7 = mkProbe(
-    "davis.notifications", "Notification integrations configured", 0.13, p7Score,
+    "davis.notifications", "Notification integrations configured", 0.12, p7Score,
     `${notificationIntegrations ?? 0} problem notification integration${notificationIntegrations !== 1 ? "s" : ""} configured`,
     "≥ 2 notification integrations (primary + backup channel)",
     (notificationIntegrations ?? 0) === 0 ? mkFinding(
