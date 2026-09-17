@@ -791,16 +791,22 @@ export function useCoverageData(
         const details: string[] = [];
 
         for (const criterion of cap.criteria) {
+          const isSkipped = skippedCriteria.has(criterion.id);
           const valueA = cache.get(criterion.query) ?? -1;
           const valueB = criterion.queryB ? cache.get(criterion.queryB) ?? -1 : undefined;
           const applicabilityValue = criterion.applicabilityQuery ? cache.get(criterion.applicabilityQuery) ?? -1 : 1;
           const applicabilityError = criterion.applicabilityQuery ? applicabilityValue === -1 : false;
           const denominatorError = criterion.queryB ? valueB === -1 : false;
-          const isError = valueA === -1 || denominatorError;
+          // isSkipped means the denominator was 0 and the numerator was intentionally not executed —
+          // treat as notApplicable rather than error (cache miss on a skipped query is not a failure)
+          const isError = !isSkipped && (valueA === -1 || denominatorError);
           let value: number;
           let notApplicable = false;
           if (isError) {
             value = 0;
+          } else if (isSkipped) {
+            value = 0;
+            notApplicable = true;
           } else if (criterion.queryB) {
             // Cross-entity ratio: (queryA / queryB) * 100
             if (!valueB || valueB <= 0) {
