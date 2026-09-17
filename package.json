@@ -1,7 +1,17 @@
 {
   "name": "dynatrace-atlas",
   "version": "2.5.15",
+  "description": "Dynatrace App for observability coverage, utilization, and tenant review assessments.",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/ricardojjulia/Atlas#readme",
+  "bugs": {
+    "url": "https://github.com/ricardojjulia/Atlas/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ricardojjulia/Atlas.git"
+  },
   "scripts": {
     "start": "env -u DEBUG npm_config_update_notifier=false npx dt-app dev",
     "build": "env -u DEBUG npm_config_update_notifier=false npx dt-app build",
