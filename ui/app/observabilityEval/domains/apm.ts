@@ -10,15 +10,12 @@ export async function runApmDomain(segFilter: string): Promise<ObsDomainResult> 
     runDql(`fetch spans, from:now()-24h\n${sf}\n| fieldsAdd svcId = coalesce(dt.entity.service, service.name)\n| filter isNotNull(svcId)\n| summarize active = countDistinct(svcId)`),
     // db.system indicates a DB span exists; db.statement is the captured SQL text
     runDql(`fetch spans, from:now()-30d\n${sf}\n| summarize total = count(), withDbStatement = countIf(isNotNull(db.statement)), withDbSystem = countIf(isNotNull(db.system)), withServiceName = countIf(isNotNull(service.name))`),
-    // Filter to recently-seen functions to match the 7d span window below
-    runDql("fetch dt.entity.aws_lambda_function | filter toTimestamp(lastSeenTms) > now() - 7d | summarize count()"),
-    runDql("fetch dt.entity.azure_function_app | filter toTimestamp(lastSeenTms) > now() - 7d | summarize count()"),
+    runDql("fetch dt.entity.aws_lambda_function | summarize count()"),
+    runDql("fetch dt.entity.azure_function_app | summarize count()"),
     runDql(`fetch spans, from:now()-7d\n${sf}\n| filter isNotNull(faas.name) or isNotNull(faas.id)\n| summarize instrumented = countDistinct(coalesce(faas.name, faas.id))`),
-    // 30d staleness filter prevents stale methods from inflating count and suppressing OTel detection
-    runDql("fetch dt.entity.service_method | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
+    runDql("fetch dt.entity.service_method | summarize count()"),
     runDql(`fetch spans, from:now()-24h\n${sf}\n| fieldsAdd svc = coalesce(dt.entity.service, service.name)\n| filter isNotNull(svc)\n| summarize total = count(), errors = countIf(otel.status_code == "ERROR" or error == true or isNotNull(exception.type)), by:{svc}\n| fieldsAdd errorRate = round(toDouble(errors) / toDouble(total) * 100.0, 1)\n| sort total desc\n| limit 20`),
-    // 30d staleness filter aligns with infra.ts and prevents denominator inflation from decommissioned services
-    runDql("fetch dt.entity.service | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
+    runDql("fetch dt.entity.service | summarize count()"),
   ]);
 
   // P1: Distributed tracing coverage — ratio of services with active traces vs total detected services

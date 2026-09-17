@@ -6,14 +6,11 @@ export async function runInfraDomain(segFilter: string): Promise<ObsDomainResult
   const sf = segFilter ? `| filter filterSegments("${segFilter}")` : "";
 
   const [hostR, svcR, activeSpanSvcR, stalePgiR, k8sR] = await Promise.all([
-    // 30d staleness filter removes decommissioned hosts from the monitored count
-    runDql("fetch dt.entity.host | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
-    runDql("fetch dt.entity.service | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
-    // 7d window avoids false ghost readings from batch/weekly workloads with irregular traffic
+    runDql("fetch dt.entity.host | summarize count()"),
+    runDql("fetch dt.entity.service | summarize count()"),
     runDql(`fetch spans, from:now()-7d\n${sf}\n| filter isNotNull(dt.entity.service)\n| summarize active = countDistinct(dt.entity.service)`),
-    // 30d window aligns with entity staleness convention used across the app
     runDql("fetch dt.entity.process_group_instance | filter isNotNull(lastSeenTms) and toTimestamp(lastSeenTms) < now() - 30d | summarize count()"),
-    runDql("fetch dt.entity.kubernetes_cluster | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
+    runDql("fetch dt.entity.kubernetes_cluster | summarize count()"),
   ]);
 
   // P1: Host baseline

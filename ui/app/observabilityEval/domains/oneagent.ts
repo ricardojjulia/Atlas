@@ -3,17 +3,13 @@ import { mkProbe, mkFinding, buildDomain } from "../domainUtils";
 import type { ObsDomainResult } from "../types";
 
 export async function runOneAgentDomain(): Promise<ObsDomainResult> {
-  // Exclude hosts not seen in 30 days to avoid stale decommissioned entities inflating denominators
-  const ACTIVE_HOST_FILTER = "filter toTimestamp(lastSeenTms) > now() - 30d";
   const [modeR, versionR, noGroupR, totalR, candidatesR, zonesR] = await Promise.all([
-    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | summarize hostCount = count(), by:{monitoringMode}`),
-    // Filter null agentVersion rows — if installerVersion field is absent, all return null → shows 0 versions (unknown)
-    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | fieldsAdd agentVersion = installerVersion | filter isNotNull(agentVersion) | summarize hostCount = count(), by:{agentVersion} | sort hostCount desc`),
-    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | filter isNull(dt.host_group.id) or dt.host_group.id == "" | summarize count()`),
-    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | summarize count()`),
-    // Staleness filter removes decommissioned hosts that were once candidates but no longer exist
-    runDql("fetch dt.entity.host | filter isMonitoringCandidate == true and toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
-    runDql(`fetch dt.entity.host | ${ACTIVE_HOST_FILTER} | fieldsAdd networkZone | summarize hostCount = count(), by:{networkZone} | sort hostCount desc`),
+    runDql("fetch dt.entity.host | summarize hostCount = count(), by:{monitoringMode}"),
+    runDql("fetch dt.entity.host | fieldsAdd agentVersion = installerVersion | filter isNotNull(agentVersion) | summarize hostCount = count(), by:{agentVersion} | sort hostCount desc"),
+    runDql("fetch dt.entity.host | filter isNull(dt.host_group.id) or dt.host_group.id == \"\" | summarize count()"),
+    runDql("fetch dt.entity.host | summarize count()"),
+    runDql("fetch dt.entity.host | filter isMonitoringCandidate == true | summarize count()"),
+    runDql("fetch dt.entity.host | fieldsAdd networkZone | summarize hostCount = count(), by:{networkZone} | sort hostCount desc"),
   ]);
 
   const totalHosts = toNum(totalR.records[0]?.["count()"]);
@@ -38,7 +34,7 @@ export async function runOneAgentDomain(): Promise<ObsDomainResult> {
     ) : undefined
   );
 
-  // P2: Agent version uniformity (null versions filtered in query — if 0 records, installerVersion field unavailable → unknown)
+  // P2: Agent version uniformity (null versions filtered in query — 0 records means no hosts have installerVersion set → unknown)
   const distinctVersions = versionR.records.length;
   // Tiered: 6–10 versions = messy but real partial compliance, not total failure
   const p2Score = distinctVersions === 0 ? 50 : distinctVersions <= 2 ? 100 : distinctVersions <= 5 ? 70 : distinctVersions <= 10 ? 40 : 0;

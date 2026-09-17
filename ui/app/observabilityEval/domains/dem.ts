@@ -5,12 +5,10 @@ import type { ObsDomainResult } from "../types";
 
 export async function runDemDomain(): Promise<ObsDomainResult> {
   const [appR, rumR, synthR, synthGrailR, settingsResult] = await Promise.all([
-    // Staleness filter — exclude decommissioned application entities
-    runDql("fetch dt.entity.application | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
+    runDql("fetch dt.entity.application | summarize count()"),
     // user_actions is the correct Grail table for RUM user action data
     runDql("fetch user_actions, from:now()-30d | summarize total = count()"),
-    // 30d staleness filter removes paused or deleted monitors from the coverage count
-    runDql("fetch dt.entity.synthetic_test | filter toTimestamp(lastSeenTms) > now() - 30d | fieldsAdd entity.name, type | summarize testCount = count(), by:{type}"),
+    runDql("fetch dt.entity.synthetic_test | fieldsAdd entity.name, type | summarize testCount = count(), by:{type}"),
     // Synthetic events in Grail are stored as events with SYNTHETIC_EVENT kind
     runDql("fetch events, from:now()-30d | filter event.kind == \"SYNTHETIC_EVENT\" | summarize total = count()"),
     getSettingsObjectCounts(["builtin:sessionreplay.web.privacy-preferences"]),

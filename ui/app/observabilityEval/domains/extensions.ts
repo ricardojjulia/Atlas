@@ -5,14 +5,12 @@ import type { ObsDomainResult } from "../types";
 
 export async function runExtensionsDomain(): Promise<ObsDomainResult> {
   const [agCountR, awsR, azureSubR, gcpR, extensionCount] = await Promise.all([
-    // 7d recency filter removes decommissioned AGs from the HA calculation
-    runDql("fetch dt.entity.active_gate | filter toTimestamp(lastSeenTms) > now() - 7d | summarize agCount = count()"),
-    // Staleness filters prevent deleted cloud integrations from appearing still-active
-    runDql("fetch dt.entity.aws_credentials | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
+    runDql("fetch dt.entity.active_gate | summarize agCount = count()"),
+    runDql("fetch dt.entity.aws_credentials | summarize count()"),
     // azure_subscription entities are created by the ActiveGate Azure cloud integration — more reliable than VM count
-    runDql("fetch dt.entity.azure_subscription | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
+    runDql("fetch dt.entity.azure_subscription | summarize count()"),
     // google_cloud_platform entities indicate GCP cloud integration is configured via ActiveGate
-    runDql("fetch dt.entity.google_cloud_platform | filter toTimestamp(lastSeenTms) > now() - 30d | summarize count()"),
+    runDql("fetch dt.entity.google_cloud_platform | summarize count()"),
     getExtensionCount(),
   ]);
 
